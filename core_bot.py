@@ -910,7 +910,7 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["rank_deeds"] += 1
     data["total_deeds"] += 1
     data["week_deeds"] = data.get("week_deeds", 0) + 1
-     last = datetime.fromisoformat(data.get("last_deed_time", now_msk().isoformat()))
+    last = datetime.fromisoformat(data.get("last_deed_time", now_msk().isoformat()))
     if last.tzinfo is None:
         last = TIMEZONE.localize(last)
     data["last_deed_time"] = (last + timedelta(hours=8)).isoformat()
