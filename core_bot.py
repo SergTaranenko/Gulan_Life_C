@@ -910,7 +910,10 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["rank_deeds"] += 1
     data["total_deeds"] += 1
     data["week_deeds"] = data.get("week_deeds", 0) + 1
-    data["last_deed_time"] = now_msk().isoformat()
+     last = datetime.fromisoformat(data.get("last_deed_time", now_msk().isoformat()))
+    if last.tzinfo is None:
+        last = TIMEZONE.localize(last)
+    data["last_deed_time"] = (last + timedelta(hours=8)).isoformat()
     data["hunger_notified"] = False
     save_data(data)
 
@@ -989,11 +992,7 @@ async def cmd_tried(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last = datetime.fromisoformat(data["last_deed_time"])
         if last.tzinfo is None:
             last = TIMEZONE.localize(last)
-        new_time = last + timedelta(hours=4)
-        # Не можем быть сытым больше чем сейчас
-        if new_time > now_msk():
-            new_time = now_msk()
-        data["last_deed_time"] = new_time.isoformat()
+        data["last_deed_time"] = (last + timedelta(hours=4)).isoformat()
     else:
         data["last_deed_time"] = now_msk().isoformat()
     data["hunger_notified"] = False
