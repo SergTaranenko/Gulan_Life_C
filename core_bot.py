@@ -748,8 +748,8 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 МЕНЮ КОМАНД\n\n"
         "⚒️ /done — Выполнить дело (+картинка)\n"
         "🤔 /tried — Пытался (+4ч сытости)\n"
-        "❌ /penalty — Неудача (-1 дело)\n"
-        "💥 /penalty20 — Катастрофа (-3 дела)\n\n"
+        "❌ /penalty — Неудача (-1 ч сытости)\n"
+        "💥 /penalty20 — Катастрофа (-20 ч сытости)\n\n"
         "📊 /status — Твой статус\n"
         "🎖 /rank — Описание ранга\n"
         "🗺 /path — Весь путь\n"
@@ -1008,10 +1008,8 @@ async def cmd_tried(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_penalty(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Неудача — откат на 1 дело +1ч голод"""
+    """Неудача — +1ч голод"""
     data = load_data()
-    data["rank_deeds"] = max(0, data["rank_deeds"] - 1)
-    data["total_deeds"] = max(0, data["total_deeds"] - 1)
     # +1ч голод: сдвигаем last_deed_time назад на 1 час
     if data.get("last_deed_time"):
         last = datetime.fromisoformat(data["last_deed_time"])
@@ -1025,10 +1023,10 @@ async def cmd_penalty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     needed = effective_deeds_needed(data)
     hours = get_hunger_hours(data)
     phrases = [
-        f"💀 Ошибка стоила дела. -1 и +1ч голод. Без дела: {hours:.1f}ч.",
-        f"❌ Провал. Шаг назад и +1ч голод. Без дела: {hours:.1f}ч.",
-        f"🩸 Цена неудачи — откат и +1ч голод. Без дела: {hours:.1f}ч.",
-        f"⚠️ Шаг назад. Племя недовольно. +1ч голод. Без дела: {hours:.1f}ч."
+        f"💀 Ошибка. +1ч голод. Без дела: {hours:.1f}ч.",
+        f"❌ Провал. +1ч голод. Без дела: {hours:.1f}ч.",
+        f"🩸 Цена неудачи — +1ч голод. Без дела: {hours:.1f}ч.",
+        f"⚠️ Племя недовольно. +1ч голод. Без дела: {hours:.1f}ч."
     ]
     bar = progress_bar(deeds, needed) if rank["deeds_needed"] > 0 else ""
     msg = random.choice(phrases)
@@ -1038,10 +1036,8 @@ async def cmd_penalty(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_penalty20(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Катастрофа — откат на 3 дела +20ч голод"""
+    """Катастрофа — +20ч голод"""
     data = load_data()
-    data["rank_deeds"] = max(0, data["rank_deeds"] - 3)
-    data["total_deeds"] = max(0, data["total_deeds"] - 3)
     # +20ч голод: сдвигаем last_deed_time назад на 20 часов
     if data.get("last_deed_time"):
         last = datetime.fromisoformat(data["last_deed_time"])
@@ -1055,11 +1051,11 @@ async def cmd_penalty20(update: Update, context: ContextTypes.DEFAULT_TYPE):
     needed = effective_deeds_needed(data)
     hours = get_hunger_hours(data)
     hard_penalties = [
-        f"💥 Катастрофа! -3 дела и +20ч голод. Без дела: {hours:.1f}ч.",
-        f"🌊 Всё смыло. -3 и +20ч голод. Без дела: {hours:.1f}ч.",
-        f"❄️ Племя в ярости. -3 и +20ч голод. Без дела: {hours:.1f}ч.",
-        f"🐻 Разорил всё. -3 и +20ч голод. Без дела: {hours:.1f}ч.",
-        f"⚡ Удар судьбы. -3 дела и +20ч голод. Без дела: {hours:.1f}ч."
+        f"💥 Катастрофа! +20ч голод. Без дела: {hours:.1f}ч.",
+        f"🌊 Всё смыло. +20ч голод. Без дела: {hours:.1f}ч.",
+        f"❄️ Племя в ярости. +20ч голод. Без дела: {hours:.1f}ч.",
+        f"🐻 Разорил всё. +20ч голод. Без дела: {hours:.1f}ч.",
+        f"⚡ Удар судьбы. +20ч голод. Без дела: {hours:.1f}ч."
     ]
     bar = progress_bar(deeds, needed) if rank["deeds_needed"] > 0 else ""
     msg = random.choice(hard_penalties)
