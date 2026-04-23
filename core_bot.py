@@ -800,7 +800,7 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_wisdom(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Мудрость эпохи: ранг + заповедь = история от GigaChat"""
+    """Мудрость эпохи: ранг + случайная заповедь = история от GigaChat"""
     data = load_data()
     idx = data["rank_index"]
     rank = get_rank_data(idx)
@@ -810,8 +810,8 @@ async def cmd_wisdom(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📜 Заповеди не загружены.")
         return
 
-    # Случайная заповедь, привязанная к rank_index + сид
-    cmd = commandments[idx % len(commandments)]
+    # Случайная заповедь из всех 12
+    cmd = random.choice(commandments)
 
     era_desc = (
         "Натуфийская культура Леванта, ~12000-10500 до н.э. "
