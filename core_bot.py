@@ -16,9 +16,9 @@ from io import BytesIO
 
 import pytz
 import aiohttp
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, ContextTypes
 )
 
@@ -31,8 +31,8 @@ TIMEZONE      = pytz.timezone("Europe/Moscow")
 
 WAKEUP_HOUR    = 5
 WAKEUP_MINUTE  = 30
-DOPAMINE_START = 6
-DOPAMINE_END   = 22
+DOPAMINE_HOURS = [9, 11, 13, 15, 17, 19]
+DOPAMINE_CMD_HOURS = [9, 13, 17]  # заповеди в этих пушах
 
 HUNGER_WARNING_HOURS = 18
 HUNGER_RIOT_HOURS    = 30
@@ -63,8 +63,8 @@ RANK_SCHEDULE = [
     {"rank_idx": 0,  "start": "2026-04-21", "active_from": "2026-04-21"},
     {"rank_idx": 1,  "start": "2026-05-01", "active_from": "2026-05-04"},
     {"rank_idx": 2,  "start": "2026-05-09", "active_from": "2026-05-11"},
-    {"rank_idx": 3,  "start": "2026-06-01", "active_from": "2026-06-08"},
-    {"rank_idx": 4,  "start": "2026-07-07", "active_from": "2026-07-08"},
+    {"rank_idx": 3,  "start": "2026-06-12", "active_from": "2026-06-15"},
+    {"rank_idx": 4,  "start": "2026-07-05", "active_from": "2026-07-12"},
     {"rank_idx": 5,  "start": "2026-08-01", "active_from": "2026-08-03"},
     {"rank_idx": 6,  "start": "2026-08-29", "active_from": "2026-08-31"},
     {"rank_idx": 7,  "start": "2026-09-12", "active_from": "2026-09-14"},
@@ -130,9 +130,13 @@ MILESTONES = {
     174: "🗿 174 дела. ПУТЬ ПРОЙДЕН. Ты — Созидатель места. Первый тиран.",
 }
 
-# ── Дофаминовые награды ─────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# ═══ DOPAMINE POOLS v3.1 ══════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+
 DOPAMINE_NATUF = {
     "common": [
+        # ── 25 неофисных (выживание / быт) ──
         ("🍬 Вкусняшка сладкая",      "🍯 Мёд диких пчёл — найденный в дупле"),
         ("🍫 Шоколад",                "🌰 Кедровые орехи — редкая находка"),
         ("🍎 Фрукт",                  "🍎 Дикие яблоки с рощи"),
@@ -158,6 +162,32 @@ DOPAMINE_NATUF = {
         ("😌 Самомассаж лица",       "😌 Растереть лицо с медвежьим жиром"),
         ("🔋 Зарядить телефон",      "🎒 Проверить охотничье снаряжение"),
         ("🎧 Зарядить наушники",     "🏹 Проверить тетиву лука и оперение стрел"),
+        # ── 25 офисных (древняя метафора) ──
+        ("🚰 Выпить стакан воды",     "💧 Глоток из родника — освежает"),
+        ("🪟 Посмотреть в окно",      "🌄 Взгляд на горизонт — проверить, нет ли стаи"),
+        ("📝 Записать мысль",         "🦴 Зарубка на кости — мысль не уйдёт"),
+        ("🗑️ Закрыть лишние вкладки", "🔥 Сжечь хворост — оставить только нужное"),
+        ("🧘 Три глубоких вдоха",     "🌬️ Три вдоха ветра — собраться"),
+        ("📧 Ответить на одно письмо", "🪶 Отправить весть вестником — одно послание"),
+        ("🎯 Выбрать одну задачу",    "🎯 Выбрать одну добычу — остальное подождёт"),
+        ("🚶 Пройтись до кулера",     "🏃 Дойти до родника — ноги размять"),
+        ("☀️ Встать с кресла",        "🪨 Отойти от рабочего камня — спина отдыхнет"),
+        ("📊 Проверить одну цифру",   "🧮 Пересчитать зёрна — одна мера"),
+        ("🧹 Убрать 3 файла с рабочего стола", "🪵 Убрать три щепки — место для нового"),
+        ("💡 Включить лампу дневного света", "🔥 Развести огонь ярче — видеть лучше"),
+        ("🪑 Настроить высоту кресла", "🪨 Подложить камень под сиденье — ровнее"),
+        ("🌡️ Проверить температуру в комнате", "🌤️ Проверить ветер — не слишком ли холодно"),
+        ("🎵 Включить фоновую музыку", "🎵 Сыграть на костяной флейте — один звук"),
+        ("📅 Посмотреть календарь на сегодня", "🌙 Проверить фазу луны — день определён"),
+        ("✉️ Написать одно короткое сообщение", "📜 Начертить один знак на глине — связь"),
+        ("🧴 Увлажнить руки кремом",   "🐻 Смазать руки медвежьим жиром — трещины заживут"),
+        ("🕯️ Зажечь свечу/ароматизатор", "🌿 Бросить травы в огонь — запах для духов"),
+        ("🧊 Взять лёд в стакан",      "❄️ Положить снег в кожаный мешок — вода останется холодной"),
+        ("📱 Поставить телефон экраном вниз", "🪶 Убрать перо в чехол — не отвлекаться"),
+        ("🧵 Поправить шнурок",       "🌿 Завязать ремень из лозы — туже"),
+        ("🍵 Заварить чай/кофе",      "🍵 Бросить кору в воду — настой для бодрости"),
+        ("🗂️ Сложить бумаги в стопку", "🪵 Сложить дрова ровнее — порядок в шалаше"),
+        ("🪞 Посмотреться в зеркало", "💧 Взглянуть в лужу — узнать себя"),
     ],
     "rare": [
         ("💬 Написать жене",          "💬 Поговорить с женой у общего очага"),
@@ -170,7 +200,11 @@ DOPAMINE_NATUF = {
         ("🌳 Прогулка",               "🌳 Выйти в лес — тихая охота"),
         ("🎵 Любимый трек",           "🎵 Сыграть на костяной флейте у костра"),
         ("🛏 Лечь пораньше",          "🔥 Устроиться ближе к костру — тепло и покой"),
-        ("🍦 Мороженое из Ледника",   "❄️ Загляни в Ледник Шамана (/шаман)"),
+        ("📞 Позвонить родителям",    "📯 Послать гонца к родному племени — весть о жизни"),
+        ("🍲 Приготовить что-то вкусное", "🥘 Сварить похлёбку из дичи — угощение для двоих"),
+        ("📸 Сделать фото/скриншот",  "🎨 Нарисовать один знак на камне — память о дне"),
+        ("🧩 Поразмышлять в тишине",  "🌌 Смотреть на звёзды — искать знаки"),
+        ("🎁 Купить/заказать что-то маленькое", "🐚 Обменять ракушку на украшение — дар себе"),
     ],
     "legendary": [
         ("📱 Лента Дзена",            "🔥 Медитация: смотреть на узоры пламени"),
@@ -182,11 +216,13 @@ DOPAMINE_NATUF = {
         ("🍦 Мороженое",              "❄️ Снежок с мёдом и кедровыми орехами"),
         ("🎧 Музыка в наушниках",     "👂 Прислушаться к шуму леса и реки"),
         ("🍦 Редкий вкус из Ледника", "❄️ Особая награда — /шаман раскроет тайну"),
+        ("🎬 Посмотреть хорошее кино", "🔥 Смотреть на танец пламени целый час — история без слов"),
     ]
 }
 
 DOPAMINE_NEO = {
     "common": [
+        # ── 25 неофисных (оседлая жизнь) ──
         ("🍬 Вкусняшка сладкая",      "🌾 Горсть свежемолотой пшеницы — первый урожай"),
         ("🍫 Шоколад",                "🫘 Бобы из хранилища — редкость для чужака"),
         ("🍎 Фрукт",                  "🍇 Дикий инжир с анатолийских склонов"),
@@ -212,6 +248,32 @@ DOPAMINE_NEO = {
         ("😌 Самомассаж лица",       "😌 Растереть лицо глиняной водой"),
         ("🔋 Зарядить телефон",      "🎒 Проверить запасы семян на завтра"),
         ("🎧 Зарядить наушники",     "🐐 Проверить загон для коз"),
+        # ── 25 офисных (древняя метафора) ──
+        ("🚰 Выпить стакан воды",     "🏺 Глоток из кувшина — вода из колодца"),
+        ("🪟 Посмотреть в окно",      "🏛️ Взгляд на строящуюся стену — проверить ровность"),
+        ("📝 Записать мысль",         "📜 Начертить знак на глиняной табличке — мысль останется"),
+        ("🗑️ Закрыть лишние вкладки", "🌾 Убрать сорняки — оставить только пшеницу"),
+        ("🧘 Три глубоких вдоха",     "🌬️ Три вдоха ветра с поля — собраться"),
+        ("📧 Ответить на одно письмо", "📜 Отправить глиняную табличку — одно послание"),
+        ("🎯 Выбрать одну задачу",    "🌾 Выбрать одно поле для прополки — остальное завтра"),
+        ("🚶 Пройтись до кулера",     "🏃 Выйти во двор — ноги размять у колодца"),
+        ("☀️ Встать с кресла",        "🪨 Отойти от верстака — спина отдохнёт"),
+        ("📊 Проверить одну цифру",   "🧮 Пересчитать мешок зерна — одна мера"),
+        ("🧹 Убрать 3 файла с рабочего стола", "🌾 Убрать три снопа — место для нового урожая"),
+        ("💡 Включить лампу дневного света", "🔥 Зажечь лучину — светлее в каменном доме"),
+        ("🪑 Настроить высоту кресла", "🪨 Подложить камень под сиденье — ровнее"),
+        ("🌡️ Проверить температуру в комнате", "🌤️ Проверить ветер — не слишком ли жарко для зерна"),
+        ("🎵 Включить фоновую музыку", "🎵 Сыграть на глиняной флейте — один звук"),
+        ("📅 Посмотреть календарь на сегодня", "🌙 Проверить фазу луны — пора сеять или жать"),
+        ("✉️ Написать одно короткое сообщение", "📜 Начертить один знак на глине — связь с другим поселением"),
+        ("🧴 Увлажнить руки кремом",   "🫒 Смазать руки оливковым маслом — трещины заживут"),
+        ("🕯️ Зажечь свечу/ароматизатор", "🌿 Бросить травы в очаг — запах для богов"),
+        ("🧊 Взять лёд в стакан",      "❄️ Положить снег в кувшин — вода останется холодной"),
+        ("📱 Поставить телефон экраном вниз", "🪶 Убрать перо в глиняный сосуд — не отвлекаться"),
+        ("🧵 Поправить шнурок",       "🌿 Завязать ремень из лозы — туже"),
+        ("🍵 Заварить чай/кофе",      "🍵 Залить зерно кипятком — настой для бодрости"),
+        ("🗂️ Сложить бумаги в стопку", "🌾 Сложить снопы ровнее — порядок в житнице"),
+        ("🪞 Посмотреться в зеркало", "💧 Взглянуть в лужу у колодца — узнать себя"),
     ],
     "rare": [
         ("💬 Написать жене",          "💬 Поговорить с женой — оседлая жизнь это позволяет"),
@@ -226,7 +288,9 @@ DOPAMINE_NEO = {
         ("💑 Время с женой",          "🏠 Вечер в каменном доме вдвоём — у тебя теперь есть стены"),
         ("💆 Массаж от супруги",      "🫒 Она разотрёт плечи оливковым маслом — строитель устал"),
         ("🫂 Обнять жену",            "🫂 Обнять у очага — оседлая жизнь даёт это каждый вечер"),
-        ("🍦 Мороженое из Ледника",   "❄️ Загляни в Ледник Шамана (/шаман)"),
+        ("🍲 Приготовить что-то вкусное", "🥘 Сварить похлёбку из зерна и бобов — угощение для семьи"),
+        ("📸 Сделать фото/скриншот",  "🎨 Начертить узор на глине — память о дне"),
+        ("🧩 Поразмышлять в тишине",  "🌌 Смотреть на звёзды — искать знаки для посева"),
     ],
     "legendary": [
         ("📱 Лента Дзена",            "🔥 Медитация у ритуального огня Гёбекли-Тепе"),
@@ -238,21 +302,51 @@ DOPAMINE_NEO = {
         ("🍦 Мороженое",              "🫒 Оливки с анатолийских склонов — они здесь есть"),
         ("🎧 Музыка в наушниках",     "👂 Слушать звуки первого постоянного поселения"),
         ("🍦 Редкий вкус из Ледника", "❄️ Особая награда — /шаман раскроет тайну"),
+        ("🎬 Посмотреть хорошее кино", "🔥 Смотреть на танец пламени в ритуальном очаге — история без слов"),
     ]
 }
 
-def get_dopamine_reward(era: str = "natuf") -> str:
+# ── Ранговое обрамление (описательное) ──
+RANK_FRAMING = {
+    0:  "Тебе бросили кость: {reward}",
+    1:  "Старший разрешил: {reward}",
+    2:  "Мастер одобрил перерыв: {reward}",
+    3:  "Тропа привела к: {reward}",
+    4:  "Архив подсказал: {reward}",
+    5:  "Старший у очага разрешил: {reward}",
+    6:  "Чужак нашёл: {reward}",
+    7:  "Строитель заслужил: {reward}",
+    8:  "Сеятель увидел всходы и отдыхает: {reward}",
+    9:  "Жрец разрешил: {reward}",
+    10: "Хранитель зерна открыл: {reward}",
+    11: "Созидатель велел себе: {reward}",
+}
+
+# ── Генератор награды ──
+def get_dopamine_reward(era: str = "natuf", rank_index: int = 0, hour: int = 0) -> str:
     pool = DOPAMINE_NATUF if era == "natuf" else DOPAMINE_NEO
+
+    LEGENDARY_CHANCES = [0, 0, 3, 3, 5, 5, 8, 8, 12, 12, 18, 18]
+    leg_chance = LEGENDARY_CHANCES[rank_index] if rank_index < 12 else 18
+    if hour not in (19, 21):
+        leg_chance = 0
+
     roll = random.randint(1, 100)
-    if roll <= 70:
-        cat = "common"
-    elif roll <= 95:
+    if roll <= leg_chance:
+        cat = "legendary"
+    elif roll <= leg_chance + 25:
         cat = "rare"
     else:
-        cat = "legendary"
+        cat = "common"
+
     modern, ancient = random.choice(pool[cat])
     icon = "🏹" if era == "natuf" else "🌾"
-    return f"{modern}\n{icon} {ancient}"
+
+    reward_text = f"{modern}
+{icon} {ancient}"
+    frame = RANK_FRAMING.get(rank_index, "Награда: {reward}")
+    return frame.format(reward=reward_text)
+
 
 # ── GigaChat ─────────────────────────────────────────────────────────────────
 class GigaChatAPI:
@@ -484,6 +578,32 @@ def effective_deeds_needed(data: dict) -> int:
     carry = data.get("carry_deeds", 0)
     return max(1, base - carry)
 
+
+def get_rank_hunger_thresholds(data: dict) -> tuple:
+    rank = get_rank_data(data["rank_index"])
+    warn = rank.get("hunger_warning_hours", HUNGER_WARNING_HOURS)
+    riot = rank.get("hunger_riot_hours", HUNGER_RIOT_HOURS)
+    return warn, riot
+
+
+def get_rank_hunger_text(data: dict, mode: str) -> str:
+    idx = data["rank_index"]
+    rank = get_rank_data(idx)
+    hours = get_hunger_hours(data)
+
+    if mode == "warning":
+        template = rank.get("hunger_warning_text",
+            "⚠️ {rank_name} — пауза затянулась. Действуй, пока не поздно.")
+        return template.format(rank_name=rank["name"], hours=hours)
+
+    if mode == "riot":
+        template = rank.get("hunger_riot_text",
+            "🔥 {rank_name} — уже {hours:.0f} ч. без дела. Племя теряет терпение.")
+        return template.format(rank_name=rank["name"], hours=hours)
+
+    return ""
+
+
 def progress_bar(current: int, total: int, length: int = 10) -> str:
     if total <= 0:
         return "█" * length
@@ -565,9 +685,10 @@ def get_hunger_hours(data: dict) -> float:
 
 def get_hunger_mode(data: dict) -> str:
     h = get_hunger_hours(data)
-    if h < HUNGER_WARNING_HOURS:
+    warn, riot = get_rank_hunger_thresholds(data)
+    if h < warn:
         return "good"
-    elif h < HUNGER_RIOT_HOURS:
+    elif h < riot:
         return "bad"
     return "riot"
 
@@ -613,20 +734,16 @@ def rank_status_text(data: dict) -> str:
     mode = get_hunger_mode(data)
     if is_holiday_mode():
         lines.append(f"\n🎉 Праздничный режим. Отдыхай.")
+    elif hours < 0:
+        lines.append(f"\n⏱️ Сытость: ещё {abs(hours):.1f} ч.")
     elif mode == "good":
-        overtime = max(0, hours - HUNGER_WARNING_HOURS)
-        if overtime > 0:
-            lines.append(f"\n⏱️ Без дела: {hours:.1f} ч.")
-            lines.append(f"🔥 БУНТ! Без дела {overtime:.1f} ч.!")
-        else:
-            lines.append(f"\n⏱️ Без дела: {hours:.1f} ч.")
+        lines.append(f"\n⏱️ Без дела: {hours:.1f} ч.")
     elif mode == "bad":
         lines.append(f"\n⏱️ Без дела: {hours:.1f} ч.")
-        lines.append(f"⚠️ Пауза затянулась. Действуй.")
+        lines.append(get_rank_hunger_text(data, "warning"))
     else:
-        overtime = hours - HUNGER_RIOT_HOURS
         lines.append(f"\n⏱️ Без дела: {hours:.1f} ч.")
-        lines.append(f"🔥 БУНТ! Без дела {overtime:.1f} ч.!")
+        lines.append(get_rank_hunger_text(data, "riot"))
 
     lines.append("\n/done · /status · /rank · /path")
     return "\n".join(lines)
@@ -687,6 +804,7 @@ async def check_date_transitions(bot, user_id: int, data: dict):
                     data["penalty_pool"] = data.get("penalty_pool", 0) + abs(diff)
 
                 data["carry_deeds"] = data.get("excess_pool", 0)
+                data["excess_pool"] = 0
                 data["rank_index"] = new_idx
                 data["rank_deeds"] = 0
                 save_data(data)
@@ -921,13 +1039,6 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deeds = data["rank_deeds"]
     phrase = random.choice(rank["done_phrases"])
 
-    if is_holiday_mode():
-        await update.message.reply_text(
-            f"⚒️ {phrase}\n\n🎉 Праздничный режим — дело идёт в запас.",
-            reply_markup=main_keyboard()
-        )
-        return
-
     # Выбор продукта: каждое 5-е — редкий
     is_rare = (deeds % 5 == 0)
     product_list = rank.get("rare_products" if is_rare else "products")
@@ -955,6 +1066,9 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = f"👑 {phrase}\n\n{rare_mark}Ты выполнил дело: {product_name}"
         else:
             msg = f"👑 {phrase}"
+
+    if is_holiday_mode():
+        msg += "\n\n🎉 Праздничный режим — дело идёт в запас."
 
     await update.message.reply_text(msg, reply_markup=main_keyboard())
 
@@ -1152,7 +1266,7 @@ async def cmd_carry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_carry = data["carry_deeds"]
     await update.message.reply_text(
         f"📦 Перенос выполнен!\n"
-        f"+1 сверхдело в следующий ранг «{next_rank['name']}»\n"
+        f"+1 сверхдело в текущий ранг\n"
         f"📦 Кэрриовер: {new_carry}\n"
         f"⚡ Сверхдел осталось: {data['excess_pool']}",
         reply_markup=main_keyboard()
@@ -1216,7 +1330,6 @@ async def cmd_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     data["excess_pool"] = excess - 1
-    data["carry_deeds"] = max(0, data.get("carry_deeds", 0) - 1)
     data["rewards_earned"] = data.get("rewards_earned", 0) + 1
     rewards_total = data["rewards_earned"]
     save_data(data)
@@ -1546,39 +1659,44 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         data["week_start"] = today_str()
         save_data(data)
 
-    # Дофамин в :55 нечётных часов (1-2 раза в день)
-    if m == 55 and DOPAMINE_START <= h <= DOPAMINE_END and h % 2 != 0:
+    # Дофамин-пуши в фиксированные часы
+    if m == 55 and h in DOPAMINE_HOURS:
         if data.get("last_dopamine_hour") != h:
             data["last_dopamine_hour"] = h
             save_data(data)
-            reward = get_dopamine_reward(era=era)
-            await context.bot.send_message(chat_id=user_id, text=reward)
-            commandments = load_commandments()
-            if commandments:
-                cmd = random.choice(commandments)
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"📜 {cmd['id']}. {cmd['short']} — {cmd['full']}"
-                )
+
+            with_commandment = h in DOPAMINE_CMD_HOURS
+            reward = get_dopamine_reward(
+                era=era,
+                rank_index=data["rank_index"],
+                hour=h
+            )
+
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⚡ Выполнил (+0.25ч)", callback_data="micro_done")]
+            ])
+
+            msg = reward
+            if with_commandment:
+                commandments = load_commandments()
+                if commandments:
+                    cmd = random.choice(commandments)
+                    msg += f"\n\n📜 {cmd['id']}. {cmd['short']} — {cmd['full']}"
+
+            await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=keyboard)
 
     # Голод / бунт
     if not holiday:
         mode = get_hunger_mode(data)
         if mode == "riot" and m in [0, 30]:
             hours = get_hunger_hours(data)
-            riots = [
-                f"🔥 КРИЗИС. {rank['name']} — уже {hours:.0f} ч. без дела.",
-                f"🔥 Племя теряет терпение. {rank['name']} — действуй.",
-                f"🔥 Застрял. {rank['name']} требует работы. Прямо сейчас."
-            ]
-            await context.bot.send_message(chat_id=user_id, text=random.choice(riots))
+            msg = get_rank_hunger_text(data, "riot")
+            await context.bot.send_message(chat_id=user_id, text=msg)
         elif mode == "bad" and not data.get("hunger_notified"):
             data["hunger_notified"] = True
             save_data(data)
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"⚠️ {rank['name']} — пауза затянулась. Действуй, пока не поздно."
-            )
+            msg = get_rank_hunger_text(data, "warning")
+            await context.bot.send_message(chat_id=user_id, text=msg)
 
     # 31 декабря — победа
     if is_victory_day() and h == 10 and m == 0 and not data.get("victory_shown"):
@@ -1617,6 +1735,32 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
                     chat_id=user_id, photo=BytesIO(img),
                     caption="🗿 Созидатель места."
                 )
+
+
+async def handle_micro_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = load_data()
+    if data.get("last_deed_time"):
+        last = datetime.fromisoformat(data["last_deed_time"])
+        if last.tzinfo is None:
+            last = TIMEZONE.localize(last)
+        data["last_deed_time"] = (last + timedelta(hours=0.25)).isoformat()
+    else:
+        data["last_deed_time"] = now_msk().isoformat()
+
+    data["hunger_notified"] = False
+    save_data(data)
+
+    phrases = [
+        "⚡ Микро-награда выполнена. +0.25ч к сытости.",
+        "⚡ Действие засчитано. Голод отодвинут на 15 минут.",
+        "⚡ Мелочь, но в Натуфе мелочи спасают. +0.25ч.",
+        "⚡ Отвар выпит / рубаха сменена. +0.25ч сытости."
+    ]
+    await query.edit_message_reply_markup(reply_markup=None)
+    await context.bot.send_message(chat_id=query.message.chat_id, text=random.choice(phrases))
 
 
 # ── Обработка текста и кнопок ─────────────────────────────────────────────────
@@ -1734,11 +1878,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Свободный текст
-    if any(w in text_lower for w in ["сделал", "готово", "сделала", "done"]):
+    has_done = any(w in text_lower for w in ["сделал", "готово", "сделала", "done"])
+    has_not_done = any(n in text_lower for n in ["не сделал", "не готово", "не сделала", "не done", "not done"])
+
+    has_tried = any(w in text_lower for w in ["попробовал", "старался", "tried", "пыт"])
+    has_not_tried = any(n in text_lower for n in ["не попробовал", "не старался", "not tried", "не пыт"])
+
+    has_penalty = "неудач" in text_lower or "плохо" in text_lower or "провал" in text_lower
+    has_not_penalty = any(n in text_lower for n in ["не плохо", "не провал", "не неудач"])
+
+    if has_done and not has_not_done:
         await cmd_done(update, context)
-    elif any(w in text_lower for w in ["попробовал", "старался", "tried", "пыт"]):
+    elif has_tried and not has_not_tried:
         await cmd_tried(update, context)
-    elif "неудач" in text_lower or "плохо" in text_lower or "провал" in text_lower:
+    elif has_penalty and not has_not_penalty:
         await cmd_penalty(update, context)
     elif any(w in text_lower for w in ["статус", "status"]):
         await cmd_status(update, context)
@@ -1771,6 +1924,7 @@ def main():
     app.add_handler(CommandHandler("menu",    cmd_menu))
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CommandHandler("wisdom",  cmd_wisdom))
+    app.add_handler(CallbackQueryHandler(handle_micro_done, pattern="^micro_done$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.job_queue.run_repeating(main_timer, interval=60, first=10)
 
