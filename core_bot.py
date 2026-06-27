@@ -342,8 +342,7 @@ def get_dopamine_reward(era: str = "natuf", rank_index: int = 0, hour: int = 0) 
     modern, ancient = random.choice(pool[cat])
     icon = "🏹" if era == "natuf" else "🌾"
 
-    reward_text = f"{modern}
-{icon} {ancient}"
+    reward_text = f"{modern}\n{icon} {ancient}"
     frame = RANK_FRAMING.get(rank_index, "Награда: {reward}")
     return frame.format(reward=reward_text)
 
