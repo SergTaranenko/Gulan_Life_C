@@ -21,6 +21,8 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, ContextTypes
 )
+import stones                       # PATCH-8: камни/слоты/гимн/шмотка/сцены
+from img_cache import cached_image  # PATCH-8: кэш картинок GigaChat
 
 # ── Конфигурация ────────────────────────────────────────────────────────────
 BOT_TOKEN     = os.environ.get("BOT_TOKEN")
@@ -49,8 +51,8 @@ logger = logging.getLogger(__name__)
 # ── Клавиатура ──────────────────────────────────────────────────────────────
 def main_keyboard():
     return ReplyKeyboardMarkup([
-        ["⚒️ Сделано", "🤔 Пытался"],
-        ["❌ Неудача", "📊 Статус"],
+        ["🧱 Камень", "⚒️ Сделано", "🤔 Пытался"],   # PATCH-8
+        ["❌ Неудача", "📊 Статус", "🎵 Гимн"],       # PATCH-8
         ["🎖 Ранг", "🗺 Путь"],
         ["🧊 Шаман", "🎁 Награда"],
         ["📜 Расписание", "🔮 Мудрость"],
@@ -65,8 +67,8 @@ RANK_SCHEDULE = [
     {"rank_idx": 2,  "start": "2026-05-09", "active_from": "2026-05-11"},
     {"rank_idx": 3,  "start": "2026-06-12", "active_from": "2026-06-15"},
     {"rank_idx": 4,  "start": "2026-07-05", "active_from": "2026-07-12"},
-    {"rank_idx": 5,  "start": "2026-08-01", "active_from": "2026-08-03"},
-    {"rank_idx": 6,  "start": "2026-08-29", "active_from": "2026-08-31"},
+    {"rank_idx": 5,  "start": "2026-07-27", "active_from": "2026-07-28"},
+    {"rank_idx": 6,  "start": "2026-08-01", "active_from": "2026-08-03"},
     {"rank_idx": 7,  "start": "2026-09-12", "active_from": "2026-09-14"},
     {"rank_idx": 8,  "start": "2026-10-03", "active_from": "2026-10-05"},
     {"rank_idx": 9,  "start": "2026-11-04", "active_from": "2026-11-06"},
@@ -806,6 +808,7 @@ async def check_date_transitions(bot, user_id: int, data: dict):
                 data["excess_pool"] = 0
                 data["rank_index"] = new_idx
                 data["rank_deeds"] = 0
+                stones.on_rank_change(data)        # PATCH-8: счётчики камней ранга в ноль
                 save_data(data)
 
                 new_rank = get_rank_data(new_idx)
@@ -847,7 +850,7 @@ async def check_date_transitions(bot, user_id: int, data: dict):
 
                 img_prompt = new_rank.get("image_prompt")
                 if img_prompt:
-                    img = await gigachat.generate_image(img_prompt)
+                    img = await cached_image(gigachat, img_prompt)
                     if img:
                         await bot.send_photo(
                             chat_id=user_id, photo=BytesIO(img),
@@ -1030,8 +1033,9 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last = datetime.fromisoformat(data.get("last_deed_time", now_msk().isoformat()))
     if last.tzinfo is None:
         last = TIMEZONE.localize(last)
-    data["last_deed_time"] = (last + timedelta(hours=8)).isoformat()
+    data["last_deed_time"] = (last + timedelta(hours=12)).isoformat()   # PATCH-8: дело = +12ч
     data["hunger_notified"] = False
+    stones.on_done(data)                       # PATCH-8: кладка закрыта
     save_data(data)
 
     needed = effective_deeds_needed(data)
@@ -1073,7 +1077,7 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Картинка GigaChat
     if product_img_prompt:
-        img = await gigachat.generate_image(product_img_prompt)
+        img = await cached_image(gigachat, product_img_prompt)
         if img:
             caption = f"{'🌟 ' if is_rare else ''}{product_name}"
             await update.message.reply_photo(
@@ -1087,6 +1091,11 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=main_keyboard()
             )
 
+    # PATCH-8: шмотка за дело
+    shm = stones.shmotka(rank)
+    if shm:
+        await update.message.reply_text(shm, reply_markup=main_keyboard())
+
     # Вехи
     total = data["total_deeds"]
     shown = data.get("milestones_shown", [])
@@ -1097,6 +1106,30 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(MILESTONES[total], reply_markup=main_keyboard())
 
 
+# PATCH-8 ── /step: камень = шаг. Сытость +4ч (пытался +2, дело +12)
+async def cmd_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_bot_active():
+        await update.message.reply_text("Путь завершён.")
+        return
+    data = load_data()
+    rank = get_rank_data(data["rank_index"])
+    last = datetime.fromisoformat(data.get("last_deed_time") or now_msk().isoformat())
+    if last.tzinfo is None:
+        last = TIMEZONE.localize(last)
+    data["last_deed_time"] = (max(last, now_msk()) + timedelta(hours=4)).isoformat()   # PATCH-8: камень = +4ч
+    data["hunger_notified"] = False
+    msg = stones.add_stone(data, rank, now_msk().hour, data["rank_deeds"], effective_deeds_needed(data))
+    save_data(data)
+    await update.message.reply_text(msg, reply_markup=main_keyboard())
+
+
+# PATCH-8 ── /hymn: стрела из колчана — включи мотивацию на телефоне
+async def cmd_hymn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    rank = get_rank_data(data["rank_index"])
+    await update.message.reply_text(stones.hymn(rank), reply_markup=main_keyboard())
+
+
 async def cmd_tried(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Попытка — сбрасывает голод (+4ч сытости)"""
     data = load_data()
@@ -1105,7 +1138,7 @@ async def cmd_tried(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last = datetime.fromisoformat(data["last_deed_time"])
         if last.tzinfo is None:
             last = TIMEZONE.localize(last)
-        data["last_deed_time"] = (last + timedelta(hours=4)).isoformat()
+        data["last_deed_time"] = (last + timedelta(hours=2)).isoformat()   # PATCH-8: пытался = +2ч
     else:
         data["last_deed_time"] = now_msk().isoformat()
     data["hunger_notified"] = False
@@ -1460,6 +1493,9 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         data["superhero_morning_flag"] = False
         data["waiting_for_keeper"] = False
         data["weekly_report_sent"] = False
+        data["scene_sent"] = False                 # PATCH-8
+        data["stones_line_sent"] = False           # PATCH-8
+        stones.on_day_reset(data)                  # PATCH-8
         save_data(data)
 
     # Проверка перехода по дате
@@ -1530,6 +1566,27 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
                 "Возвращайся не только телом — и сердцем.\n"
                 "Одно живое действие для близких."
             )
+        )
+
+    # PATCH-8 ── 13:00 — зарисовка эпохи (текст + картинка из пула ранга)
+    if h == 13 and m == 0 and not data.get("scene_sent") and not holiday:
+        data["scene_sent"] = True
+        save_data(data)
+        sc_text, sc_prompt = stones.scene(rank)
+        if sc_text:
+            img = await cached_image(gigachat, sc_prompt) if sc_prompt else None
+            if img:
+                await context.bot.send_photo(chat_id=user_id, photo=BytesIO(img), caption=sc_text)
+            else:
+                await context.bot.send_message(chat_id=user_id, text=sc_text)
+
+    # PATCH-8 ── 23:00 — строка камней ранга (утро/день/вечер)
+    if h == 23 and m == 0 and not data.get("stones_line_sent"):
+        data["stones_line_sent"] = True
+        save_data(data)
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=stones.evening_line(data, rank, data["rank_deeds"], effective_deeds_needed(data))
         )
 
     # 21:00 — Вечерний чек
@@ -1612,8 +1669,10 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
             night_msg = f"🌙 Спокойной ночи. {rank['name']}. Запас дел создан — ждём дату перехода."
 
         img_prompt = rank.get("image_prompt")
+        if rank.get("scenes"):                     # PATCH-8: ночная картинка из пула сцен ранга
+            img_prompt = random.choice(rank["scenes"])[1]
         if img_prompt:
-            img = await gigachat.generate_image(img_prompt + ", ночное небо, звёзды, тихо")
+            img = await cached_image(gigachat, img_prompt + ", ночное небо, звёзды, тихо")
             if img:
                 await context.bot.send_photo(
                     chat_id=user_id, photo=BytesIO(img), caption=night_msg
@@ -1645,7 +1704,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         if week_deeds >= 7:
             img_prompt = rank.get("image_prompt")
             if img_prompt:
-                img = await gigachat.generate_image(
+                img = await cached_image(gigachat, 
                     img_prompt + ", итог недели, семь дел, стойкость"
                 )
                 if img:
@@ -1709,7 +1768,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=user_id, text=msg2)
         final_prompt = rank12.get("image_prompt")
         if final_prompt:
-            img = await gigachat.generate_image(final_prompt)
+            img = await cached_image(gigachat, final_prompt)
             if img:
                 await context.bot.send_photo(
                     chat_id=user_id, photo=BytesIO(img),
@@ -1728,7 +1787,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=user_id, text=msg2)
         early_prompt = rank12.get("image_prompt")
         if early_prompt:
-            img = await gigachat.generate_image(early_prompt)
+            img = await cached_image(gigachat, early_prompt)
             if img:
                 await context.bot.send_photo(
                     chat_id=user_id, photo=BytesIO(img),
@@ -1772,7 +1831,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
 
     # Обработка кнопок клавиатуры
-    if text == "⚒️ Сделано":
+    if text == "🧱 Камень":                       # PATCH-8
+        await cmd_step(update, context)
+        return
+    elif text == "🎵 Гимн":                      # PATCH-8
+        await cmd_hymn(update, context)
+        return
+    elif text == "⚒️ Сделано":
         await cmd_done(update, context)
         return
     elif text == "🤔 Пытался":
@@ -1853,11 +1918,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             # Рассветная картинка через GigaChat
             rank_img = rank.get("image_prompt", "")
+            if rank.get("scenes"):                 # PATCH-8: рассветная картинка из пула сцен ранга
+                rank_img = random.choice(rank["scenes"])[1]
             if rank_img:
                 sunrise_prompt = rank_img.replace("ночь", "рассвет").replace("ночное", "рассветное")
             else:
                 sunrise_prompt = f"Рассвет у стоянки первобытного человека, {rank['name']}, начало нового дня, оптимизм, реализм"
-            img = await gigachat.generate_image(sunrise_prompt + ", золотой свет, новый день")
+            img = await cached_image(gigachat, sunrise_prompt + ", золотой свет, новый день")
             if img:
                 await update.message.reply_photo(
                     photo=BytesIO(img), caption="🌅 Рассвет. День начат.",
@@ -1886,7 +1953,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     has_penalty = "неудач" in text_lower or "плохо" in text_lower or "провал" in text_lower
     has_not_penalty = any(n in text_lower for n in ["не плохо", "не провал", "не неудач"])
 
-    if has_done and not has_not_done:
+    if any(w in text_lower for w in ["камень", "шаг", "step"]):     # PATCH-8
+        await cmd_step(update, context)
+    elif any(w in text_lower for w in ["гимн", "песн", "стрел"]):    # PATCH-8
+        await cmd_hymn(update, context)
+    elif has_done and not has_not_done:
         await cmd_done(update, context)
     elif has_tried and not has_not_tried:
         await cmd_tried(update, context)
@@ -1908,6 +1979,8 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start",   cmd_start))
     app.add_handler(CommandHandler("done",    cmd_done))
+    app.add_handler(CommandHandler("step",    cmd_step))    # PATCH-8
+    app.add_handler(CommandHandler("hymn",    cmd_hymn))    # PATCH-8
     app.add_handler(CommandHandler("tried",   cmd_tried))
     app.add_handler(CommandHandler("penalty", cmd_penalty))
     app.add_handler(CommandHandler("penalty20", cmd_penalty20))
