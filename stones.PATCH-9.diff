@@ -1,0 +1,54 @@
+--- stones_old.py	2026-10-04 03:44:15.722185531 +0300
++++ stones.py	2026-10-04 03:43:32.653129150 +0300
+@@ -31,10 +31,10 @@
+     n = max(0, min(n, total))
+     return "▮" * n + "▯" * (total - n)
+ 
+-def wall_bar(deeds: int, needed: int) -> str:
+-    """Стена ранга: каждая кладка — кирпич."""
++def wall_bar(deeds: int, needed: int, icon: str = "🧱") -> str:
++    """Стена ранга: каждая кладка — кирпич. PATCH-9: значок из ранга."""
+     needed = max(needed, 1)
+-    return "🧱" * min(deeds, needed) + "▫️" * max(0, needed - deeds)
++    return icon * min(deeds, needed) + "▫️" * max(0, needed - deeds)
+ 
+ def add_stone(data: dict, rank: dict, hour: int, deeds: int, needed: int) -> str:
+     ensure_keys(data)
+@@ -45,14 +45,17 @@
+     data["stones_slots"][slot_of(hour, rank)] += 1
+     phrase = random.choice(rank.get("step_phrases", ["Шаг сделан."]))
+     inb = data["stones_in_deed"]
++    w = rank.get("words", {})                                   # PATCH-9: словарь ранга
++    step_w, group_w, wall_w = w.get("step", "Камень"), w.get("group", "Кладка"), w.get("wall", "Стена ранга")
++    icon, five = w.get("icon", "🧱"), w.get("five", "Пять камней легли — нажми «⚒️ Сделано», чтобы закрыть кладку.")
+     msg = (
+-        f"🧱 {phrase}\n\n"
+-        f"Камень {data['stones_rank']} · сегодня {data['stones_today']}\n"
+-        f"Кладка: {bricks(inb)} {inb}/5"
++        f"{icon} {phrase}\n\n"
++        f"{step_w} {data['stones_rank']} · сегодня {data['stones_today']}\n"
++        f"{group_w}: {bricks(inb)} {inb}/5"
+     )
+     if inb >= 5:
+-        msg += "\n✅ Пять камней легли — нажми «⚒️ Сделано», чтобы закрыть кладку."
+-    msg += f"\n\nСтена ранга: {wall_bar(deeds, needed)} {deeds}/{needed}"
++        msg += f"\n✅ {five}"
++    msg += f"\n\n{wall_w}: {wall_bar(deeds, needed, w.get('wall_icon', '🧱'))} {deeds}/{needed}"
+     return msg
+ 
+ def on_done(data: dict):
+@@ -72,11 +75,12 @@
+ def evening_line(data: dict, rank: dict, deeds: int, needed: int) -> str:
+     ensure_keys(data)
+     s = data["stones_slots"]
++    w = rank.get("words", {})                                   # PATCH-9
+     return (
+-        f"🧱 {rank['name']} — камни ранга\n"
++        f"{w.get('icon', '🧱')} {rank['name']} — {w.get('plural', 'камни ранга')}\n"
+         f"🌅 утро {s['morning']} · ☀️ день {s['day']} · 🌙 вечер {s['evening']}\n"
+         f"Всего за ранг: {data['stones_rank']} · сегодня: {data['stones_today']}\n"
+-        f"Стена: {wall_bar(deeds, needed)} {deeds}/{needed}"
++        f"{w.get('wall_short', 'Стена')}: {wall_bar(deeds, needed, w.get('wall_icon', '🧱'))} {deeds}/{needed}"
+     )
+ 
+ def hymn(rank: dict) -> str:

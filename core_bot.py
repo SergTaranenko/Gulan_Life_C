@@ -23,6 +23,7 @@ from telegram.ext import (
 )
 import stones                       # PATCH-8: камни/слоты/гимн/шмотка/сцены
 from img_cache import cached_image  # PATCH-8: кэш картинок GigaChat
+import sower                        # PATCH-9: житница, семена, заболел, сериал
 
 # ── Конфигурация ────────────────────────────────────────────────────────────
 BOT_TOKEN     = os.environ.get("BOT_TOKEN")
@@ -50,9 +51,14 @@ logger = logging.getLogger(__name__)
 
 # ── Клавиатура ──────────────────────────────────────────────────────────────
 def main_keyboard():
+    try:                                                     # PATCH-9: подпись шага из ранга
+        _step = get_rank_data(load_data()["rank_index"]).get("step_button", "🧱 Камень")
+    except Exception:
+        _step = "🧱 Камень"
     return ReplyKeyboardMarkup([
-        ["🧱 Камень", "⚒️ Сделано", "🤔 Пытался"],   # PATCH-8
+        [_step, "⚒️ Сделано", "🤔 Пытался"],           # PATCH-8 / PATCH-9
         ["❌ Неудача", "📊 Статус", "🎵 Гимн"],       # PATCH-8
+        ["🌱 Семя", "🌾 Житница", "🤒 Заболел"],      # PATCH-9
         ["🎖 Ранг", "🗺 Путь"],
         ["🧊 Шаман", "🎁 Награда"],
         ["📜 Расписание", "🔮 Мудрость"],
@@ -730,6 +736,11 @@ def rank_status_text(data: dict) -> str:
             lines.append(f"⚡ Пул сверхдел: {excess}  →  /reward = супернаграда")
         if penalty > 0:
             lines.append(f"🔴 Долг с прошлых рангов: {penalty} дел")
+        _gl = sower.status_line(data, rank)                 # PATCH-9
+        if _gl:
+            lines.append(_gl)
+        if sower.is_sick(data, today_str()):
+            lines.append("🤒 Сегодня больничный — голод спит, серия цела.")
 
     hours = get_hunger_hours(data)
     mode = get_hunger_mode(data)
@@ -809,6 +820,7 @@ async def check_date_transitions(bot, user_id: int, data: dict):
                 data["rank_index"] = new_idx
                 data["rank_deeds"] = 0
                 stones.on_rank_change(data)        # PATCH-8: счётчики камней ранга в ноль
+                sower.on_rank_change(data)         # PATCH-9: семена ранга в ноль
                 save_data(data)
 
                 new_rank = get_rank_data(new_idx)
@@ -876,6 +888,8 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📜 /schedule — Расписание\n"
         "📊 /balance — Долги и избыток\n"
         "🏛 /collection — Музей артефактов\n\n"
+        "🌱 /step — Борозда (+семя)  ·  /seed текст — семя в сумку  ·  /bag — сумка\n"   # PATCH-9
+        "🌾 /granary — Житница  ·  /sick — Заболел\n\n"                                      # PATCH-9
         "🎁 /reward — Супернаграда\n"
         "💰 /paydebt — Погасить долг\n"
         "📦 /carry — Перенести вперёд\n\n"
@@ -1036,6 +1050,7 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["last_deed_time"] = (last + timedelta(hours=12)).isoformat()   # PATCH-8: дело = +12ч
     data["hunger_notified"] = False
     stones.on_done(data)                       # PATCH-8: кладка закрыта
+    granary_line = sower.on_done(data, rank)   # PATCH-9: поле → взнос в житницу
     save_data(data)
 
     needed = effective_deeds_needed(data)
@@ -1096,6 +1111,19 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if shm:
         await update.message.reply_text(shm, reply_markup=main_keyboard())
 
+    # PATCH-9: житница за поле
+    if granary_line:
+        await update.message.reply_text(granary_line, reply_markup=main_keyboard())
+
+    # PATCH-9: сериал ранга — каждое N-е дело следующая серия по сюжету
+    vid = sower.next_video(data, rank, data["rank_index"])
+    if vid:
+        ok = await sower.send_video(context.bot, update.effective_chat.id, data, vid[0], vid[1])
+        if not ok:
+            sower.rollback_video(data, data["rank_index"])
+            logger.warning(f"[VIDEO] not sent: {vid[0]}")
+        save_data(data)
+
     # Вехи
     total = data["total_deeds"]
     shown = data.get("milestones_shown", [])
@@ -1120,6 +1148,9 @@ async def cmd_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["hunger_notified"] = False
     msg = stones.add_stone(data, rank, now_msk().hour, data["rank_deeds"], effective_deeds_needed(data))
     save_data(data)
+    sp = sower.seed_prompt(rank)                                   # PATCH-9: борозда = монетка + семя
+    if sp:
+        msg += "\n\n" + sp
     await update.message.reply_text(msg, reply_markup=main_keyboard())
 
 
@@ -1128,6 +1159,57 @@ async def cmd_hymn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     rank = get_rank_data(data["rank_index"])
     await update.message.reply_text(stones.hymn(rank), reply_markup=main_keyboard())
+
+
+# PATCH-9 ── /seed текст: семя в сумку. Без текста — ждём следующее сообщение.
+async def cmd_seed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    text = " ".join(context.args) if getattr(context, "args", None) else ""
+    if not text:
+        sower.ensure_keys(data)
+        data["waiting_for_seed"] = True
+        save_data(data)
+        await update.message.reply_text(
+            "🌱 Напиши семя одной строкой: вопрос и число.\nНапример: «ТО-3 у дилера 38 тыс, у неофициала 24»",
+            reply_markup=main_keyboard())
+        return
+    msg = sower.add_seed(data, text, today_str())
+    save_data(data)
+    await update.message.reply_text(msg, reply_markup=main_keyboard())
+
+
+# PATCH-9 ── /bag: сумка семян
+async def cmd_bag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    await update.message.reply_text(sower.bag_text(data), reply_markup=main_keyboard())
+
+
+# PATCH-9 ── /granary [сумма]: житница; с числом — поправить вручную
+async def cmd_granary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    rank = get_rank_data(data["rank_index"])
+    args = getattr(context, "args", None) or []
+    if args:
+        try:
+            amount = int(args[0].replace(" ", "").replace("_", ""))
+        except ValueError:
+            await update.message.reply_text("Напиши число: /granary 95000", reply_markup=main_keyboard())
+            return
+        msg = sower.set_granary(data, amount)
+        save_data(data)
+        await update.message.reply_text(msg, reply_markup=main_keyboard())
+        return
+    await update.message.reply_text(sower.granary_text(data, rank), reply_markup=main_keyboard())
+
+
+# PATCH-9 ── /sick: больничный на сегодня
+async def cmd_sick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    rank = get_rank_data(data["rank_index"])
+    text, new_last = sower.mark_sick(data, rank, now_msk(), data.get("last_deed_time"), TIMEZONE)
+    data["last_deed_time"] = new_last
+    save_data(data)
+    await update.message.reply_text(text, reply_markup=main_keyboard())
 
 
 async def cmd_tried(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1496,6 +1578,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         data["scene_sent"] = False                 # PATCH-8
         data["stones_line_sent"] = False           # PATCH-8
         stones.on_day_reset(data)                  # PATCH-8
+        data["waiting_for_seed"] = False            # PATCH-9
         save_data(data)
 
     # Проверка перехода по дате
@@ -1744,7 +1827,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=keyboard)
 
     # Голод / бунт
-    if not holiday:
+    if not holiday and not sower.is_sick(data, today_str()):     # PATCH-9: в больничный молчим
         mode = get_hunger_mode(data)
         if mode == "riot" and m in [0, 30]:
             hours = get_hunger_hours(data)
@@ -1831,8 +1914,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
 
     # Обработка кнопок клавиатуры
-    if text == "🧱 Камень":                       # PATCH-8
+    if text in ("🧱 Камень", "🌱 Борозда"):       # PATCH-8 / PATCH-9
         await cmd_step(update, context)
+        return
+    elif text == "🌱 Семя":                       # PATCH-9
+        context.args = []
+        await cmd_seed(update, context)
+        return
+    elif text == "🌾 Житница":                    # PATCH-9
+        context.args = []
+        await cmd_granary(update, context)
+        return
+    elif text == "🤒 Заболел":                    # PATCH-9
+        await cmd_sick(update, context)
         return
     elif text == "🎵 Гимн":                      # PATCH-8
         await cmd_hymn(update, context)
@@ -1877,6 +1971,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_menu(update, context)
         return
 
+    # PATCH-9: ждём текст семени после кнопки «🌱 Семя»
+    if data.get("waiting_for_seed"):
+        msg = sower.add_seed(data, text, today_str())
+        save_data(data)
+        await update.message.reply_text(msg, reply_markup=main_keyboard())
+        return
+
     # Вечерний чек — keeper
     if data.get("waiting_for_keeper"):
         if any(w in text_lower for w in ["сдержал", "yes", "конечно", "выполнено", "да"]):
@@ -1892,6 +1993,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         elif any(w in text_lower for w in ["сорвал", "no", "не выполнено", "нет", "нету"]):
             old_streak = data.get("keeper_streak", 0)
+            if sower.is_sick(data, today_str()):                 # PATCH-9: больничный — серия цела
+                data["waiting_for_keeper"] = False
+                save_data(data)
+                await update.message.reply_text(
+                    f"🤒 Больничный. Серия не тронута: {old_streak} дней.\nЛечись, племя подождёт.",
+                    reply_markup=main_keyboard()
+                )
+                return
             data["keeper_streak"] = 0
             data["waiting_for_keeper"] = False
             save_data(data)
@@ -1953,8 +2062,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     has_penalty = "неудач" in text_lower or "плохо" in text_lower or "провал" in text_lower
     has_not_penalty = any(n in text_lower for n in ["не плохо", "не провал", "не неудач"])
 
-    if any(w in text_lower for w in ["камень", "шаг", "step"]):     # PATCH-8
+    if any(w in text_lower for w in ["камень", "шаг", "step", "борозд"]):     # PATCH-8 / PATCH-9
         await cmd_step(update, context)
+    elif any(w in text_lower for w in ["заболел", "болею", "больничн"]):     # PATCH-9
+        await cmd_sick(update, context)
+    elif text_lower.startswith("семя") or text_lower.startswith("семечко"):  # PATCH-9
+        context.args = text.split(maxsplit=1)[1:]
+        await cmd_seed(update, context)
+    elif any(w in text_lower for w in ["житниц", "сумка"]):                 # PATCH-9
+        context.args = []
+        await (cmd_bag if "сумка" in text_lower else cmd_granary)(update, context)
     elif any(w in text_lower for w in ["гимн", "песн", "стрел"]):    # PATCH-8
         await cmd_hymn(update, context)
     elif has_done and not has_not_done:
@@ -1981,6 +2098,10 @@ def main():
     app.add_handler(CommandHandler("done",    cmd_done))
     app.add_handler(CommandHandler("step",    cmd_step))    # PATCH-8
     app.add_handler(CommandHandler("hymn",    cmd_hymn))    # PATCH-8
+    app.add_handler(CommandHandler("seed",    cmd_seed))    # PATCH-9
+    app.add_handler(CommandHandler("bag",     cmd_bag))     # PATCH-9
+    app.add_handler(CommandHandler("granary", cmd_granary)) # PATCH-9
+    app.add_handler(CommandHandler("sick",    cmd_sick))    # PATCH-9
     app.add_handler(CommandHandler("tried",   cmd_tried))
     app.add_handler(CommandHandler("penalty", cmd_penalty))
     app.add_handler(CommandHandler("penalty20", cmd_penalty20))
