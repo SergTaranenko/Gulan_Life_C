@@ -17,7 +17,15 @@ import random
 from datetime import timedelta
 from pathlib import Path
 
-MEDIA_DIR = Path("/app/data/media")   # в volume рядом с img/ — переживает редеплой
+MEDIA_DIRS = [Path("/app/media"), Path("/app/data/media")]   # 1) из репозитория (media/ в GitHub), 2) volume через файловый менеджер
+MEDIA_DIR = MEDIA_DIRS[0]
+
+def find_media(fname: str) -> Path:
+    for d in MEDIA_DIRS:
+        p = d / fname
+        if p.exists():
+            return p
+    return MEDIA_DIRS[0] / fname
 
 GRANARY_START = 90000
 FIELD_BONUS   = 3000
@@ -143,7 +151,7 @@ def next_video(data: dict, rank: dict, rank_index: int):
     else:
         fname, cap = random.choice(videos)
         caption = f"🎬 Путь до сих пор · {cap}"
-    return MEDIA_DIR / fname, caption
+    return find_media(fname), caption
 
 def rollback_video(data: dict, rank_index: int):
     """Ролик не ушёл — серию не считаем показанной."""
