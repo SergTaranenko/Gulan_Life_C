@@ -14,6 +14,7 @@ sower.py — PATCH-9: житница, семена, «заболел», сери
   video_file_ids   — {"r09_4.mp4": "BAACAg..."} — file_id Telegram после первой отправки
 """
 import random
+import logging
 from datetime import timedelta
 from pathlib import Path
 
@@ -26,6 +27,8 @@ def find_media(fname: str) -> Path:
         if p.exists():
             return p
     return MEDIA_DIRS[0] / fname
+
+logger = logging.getLogger(__name__)
 
 GRANARY_START = 90000
 FIELD_BONUS   = 3000
@@ -153,6 +156,33 @@ def next_video(data: dict, rank: dict, rank_index: int):
         caption = f"🎬 Путь до сих пор · {cap}"
     return find_media(fname), caption
 
+def due_videos(data: dict, rank: dict, rank_index: int, max_at_once: int = 2) -> list:
+    """PATCH-10: серии, которые положены к этому делу, включая пропущенные раньше.
+    Дело 6 при непоказанной серии 1 → серии 1 и 2 подряд (не больше max_at_once за раз).
+    Возвращает [(Path, caption, idx_до)], idx_до — куда откатить счётчик, если отправка не удалась."""
+    ensure_keys(data)
+    videos = rank.get("videos")
+    if not videos:
+        return []
+    every = rank.get("video_every", 2)
+    deeds = data.get("rank_deeds", 0)
+    if deeds <= 0 or deeds % every != 0:
+        return []
+    key = str(rank_index)
+    shown = data["video_idx"].get(key, 0)
+    if shown >= len(videos):
+        fname, cap = random.choice(videos)
+        return [(find_media(fname), f"🎬 Путь до сих пор · {cap}", None)]
+    target = min(deeds // every, len(videos))
+    out = []
+    while shown < target and len(out) < max_at_once:
+        fname, cap = videos[shown]
+        out.append((find_media(fname), f"🎬 Серия {shown + 1}/{len(videos)} · {cap}", shown))
+        shown += 1
+    data["video_idx"][key] = shown
+    return out
+
+
 def rollback_video(data: dict, rank_index: int):
     """Ролик не ушёл — серию не считаем показанной."""
     key = str(rank_index)
@@ -160,16 +190,23 @@ def rollback_video(data: dict, rank_index: int):
         data["video_idx"][key] -= 1
 
 async def send_video(bot, chat_id: int, data: dict, path: Path, caption: str) -> bool:
-    """Шлёт ролик: сначала по file_id (мгновенно), иначе файлом с диска и запоминает file_id."""
+    """Шлёт ролик: сначала по file_id (мгновенно), иначе файлом с диска и запоминает file_id.
+    PATCH-10: file_id можно получить, просто прислав ролик боту с подписью-именем (без сервера и GitHub);
+    ролик, присланный файлом, уходит send_document; ошибки пишутся в лог, а не глотаются."""
     ensure_keys(data)
     fid = data["video_file_ids"].get(path.name)
-    try:
-        if fid:
-            await bot.send_video(chat_id=chat_id, video=fid, caption=caption)
+    kind = data.get("video_kinds", {}).get(path.name, "video")
+    if fid:
+        try:
+            if kind == "document":
+                await bot.send_document(chat_id=chat_id, document=fid, caption=caption)
+            else:
+                await bot.send_video(chat_id=chat_id, video=fid, caption=caption)
             return True
-    except Exception:
-        pass
+        except Exception as e:
+            logger.error(f"[VIDEO] by file_id {path.name}: {e}")
     if not path.exists():
+        logger.warning(f"[VIDEO] no file {path} and no file_id")
         return False
     try:
         with open(path, "rb") as f:
@@ -178,5 +215,6 @@ async def send_video(bot, chat_id: int, data: dict, path: Path, caption: str) ->
         if msg and msg.video:
             data["video_file_ids"][path.name] = msg.video.file_id
         return True
-    except Exception:
+    except Exception as e:
+        logger.error(f"[VIDEO] upload {path.name}: {e}")
         return False

@@ -24,10 +24,15 @@ from telegram.ext import (
 import stones                       # PATCH-8: камни/слоты/гимн/шмотка/сцены
 from img_cache import cached_image  # PATCH-8: кэш картинок GigaChat
 import sower                        # PATCH-9: житница, семена, заболел, сериал
+import shutil                       # PATCH-10
+import safe_store                   # PATCH-10: защита файлов прогресса
+import habits                       # PATCH-10: привычки, дневник, воскресенье, идеи
 
 # ── Конфигурация ────────────────────────────────────────────────────────────
 BOT_TOKEN     = os.environ.get("BOT_TOKEN")
 GIGACHAT_AUTH = os.environ.get("GIGACHAT_AUTH")
+OWNER_ID      = int(os.environ.get("OWNER_ID", "365149642"))   # PATCH-10: пустой user_id больше не глушит бота
+TG_BACKUP_EVERY_DAYS = 3                                        # PATCH-10: копия в Telegram раз в 3 дня (решение 16.10)
 DATA_DIR      = Path("/app/data")
 RANKS_DIR     = Path(__file__).parent / "ranks"
 TIMEZONE      = pytz.timezone("Europe/Moscow")
@@ -62,7 +67,7 @@ def main_keyboard():
         ["🎖 Ранг", "🗺 Путь"],
         ["🧊 Шаман", "🎁 Награда"],
         ["📜 Расписание", "🔮 Мудрость"],
-        ["📊 Баланс", "🏛 Коллекция"],
+        ["📊 Баланс", "💡 Идея", "🗂 Копилка"],          # PATCH-10: коллекция убрана, копилка идей
         ["📋 Меню"],
     ], resize_keyboard=True)
 
@@ -77,12 +82,12 @@ RANK_SCHEDULE = [
     {"rank_idx": 6,  "start": "2026-08-01", "active_from": "2026-08-03"},
     {"rank_idx": 7,  "start": "2026-09-12", "active_from": "2026-09-14"},
     {"rank_idx": 8,  "start": "2026-10-03", "active_from": "2026-10-05"},
-    {"rank_idx": 9,  "start": "2026-11-04", "active_from": "2026-11-06"},
-    {"rank_idx": 10, "start": "2026-11-09", "active_from": "2026-11-24"},
-    {"rank_idx": 11, "start": "2026-12-12", "active_from": "2026-12-14"},
+    {"rank_idx": 9,  "start": "2026-11-04", "active_from": "2026-11-23"},   # PATCH-10: Мастер обряда, отпуск 4–22.11 = праздник
+    {"rank_idx": 10, "start": "2026-12-12", "active_from": "2026-12-14"},   # PATCH-10: Держатель зерна
+    {"rank_idx": 11, "start": "2026-12-31", "active_from": "2027-01-02"},   # PATCH-10: Созидатель места, праздник 31.12–01.01
 ]
-VICTORY_DATE = date(2026, 12, 31)
-BOT_END_DATE = date(2027, 1, 2)
+VICTORY_DATE = date(2027, 1, 14)    # PATCH-10: финал года — 14.01.2027
+BOT_END_DATE = date(2027, 1, 15)    # PATCH-10: после — ранги молчат, привычки идут дальше
 
 # ── Загрузка контента рангов ─────────────────────────────────────────────────
 _rank_modules = {}
@@ -650,27 +655,18 @@ def load_data() -> dict:
         "penalty_pool": 0,
         "rewards_earned": 0,
     }
-    try:
-        if fp.exists():
-            with open(fp, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-            for k in default:
-                if k not in saved:
-                    saved[k] = default[k]
-            return saved
-        return default
-    except Exception as e:
-        logger.error(f"load_data: {e}")
-        return default
+    # PATCH-10: испорченный файл не превращается молча в «нулевой» прогресс — берём копию
+    saved, _status = safe_store.safe_load(fp, lambda: dict(default))
+    for k in default:
+        if k not in saved:
+            saved[k] = default[k]
+    if not saved.get("user_id"):
+        saved["user_id"] = OWNER_ID
+    return saved
 
 def save_data(data: dict):
-    fp = DATA_DIR / "path_data.json"
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with open(fp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"save_data: {e}")
+    # PATCH-10: запись через временный файл; прогресс «назад» (102 → 0) записать нельзя
+    safe_store.guarded_save(DATA_DIR / "path_data.json", data, guard_keys=("total_deeds", "rank_index"))
 
 def load_commandments() -> list:
     for fp in [DATA_DIR / "commandments.json", Path(__file__).parent / "commandments.json"]:
@@ -740,7 +736,11 @@ def rank_status_text(data: dict) -> str:
         if _gl:
             lines.append(_gl)
         if sower.is_sick(data, today_str()):
-            lines.append("🤒 Сегодня больничный — голод спит, серия цела.")
+            lines.append("🤒 Сегодня больничный — голод спит.")         # PATCH-10: серии больше нет
+        try:
+            lines.append(habits.status_line(habits.load(), today_msk()))  # PATCH-10
+        except Exception as e:
+            logger.error(f"habits status: {e}")
 
     hours = get_hunger_hours(data)
     mode = get_hunger_mode(data)
@@ -790,6 +790,25 @@ ERA_TRANSITION_TEXT = """
 async def check_date_transitions(bot, user_id: int, data: dict):
     today = today_msk()
     shown = data.get("rank_transitions_shown", [])
+
+    # PATCH-10: больше одного перехода сразу = файл прогресса пустой, а не реальные ранги.
+    # 16.10.2026 так начислилось 126 дел долга. Теперь — прыжок без долга и предупреждение.
+    pending = [s for s in RANK_SCHEDULE[1:] if today >= parse_date(s["start"]) and s["start"] not in shown]
+    if len(pending) > 1:
+        for s in pending:
+            shown.append(s["start"])
+        data["rank_transitions_shown"] = shown
+        if pending[-1]["rank_idx"] > data["rank_index"]:
+            data["rank_index"] = pending[-1]["rank_idx"]
+            data["rank_deeds"] = 0
+        save_data(data)
+        await bot.send_message(
+            chat_id=user_id,
+            text=(f"⚠️ Пропущено сразу несколько переходов рангов ({len(pending)}) — похоже, файл прогресса пустой.\n"
+                  f"Долг за них не начисляю. Если прогресс пропал — перешли боту последнюю копию "
+                  f"файла path_data (бот присылает её раз в {TG_BACKUP_EVERY_DAYS} дня).")
+        )
+        return
 
     for sched in RANK_SCHEDULE[1:]:
         start_str = sched["start"]
@@ -887,9 +906,12 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗺 /path — Весь путь\n"
         "📜 /schedule — Расписание\n"
         "📊 /balance — Долги и избыток\n"
-        "🏛 /collection — Музей артефактов\n\n"
+        "\n"
         "🌱 /step — Борозда (+семя)  ·  /seed текст — семя в сумку  ·  /bag — сумка\n"   # PATCH-9
         "🌾 /granary — Житница  ·  /sick — Заболел\n\n"                                      # PATCH-9
+        "🌱 /habit — вопрос о привычке сейчас  ·  /habits — план привычек\n"                    # PATCH-10
+        "💡 «идея …» или /idea — в копилку  ·  /ideas — копилка идей\n"                        # PATCH-10
+        "🎬 /video — ролики ранга  ·  💾 /backup — копия файлов сейчас\n\n"                   # PATCH-10
         "🎁 /reward — Супернаграда\n"
         "💰 /paydebt — Погасить долг\n"
         "📦 /carry — Перенести вперёд\n\n"
@@ -929,7 +951,7 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_natuf = sum(get_rank_data(i)["deeds_needed"] for i in range(6))
     total_neo = sum(get_rank_data(i)["deeds_needed"] for i in range(6, 12))
     lines.append(f"\n📊 Всего: {total_natuf}+{total_neo} = {total_natuf+total_neo} дел")
-    lines.append(f"🏁 Финал: 31.12.2026")
+    lines.append(f"🏁 Финал: {VICTORY_DATE.strftime('%d.%m.%Y')}")   # PATCH-10
     await update.message.reply_text("\n".join(lines), reply_markup=main_keyboard())
 
 
@@ -1116,12 +1138,20 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(granary_line, reply_markup=main_keyboard())
 
     # PATCH-9: сериал ранга — каждое N-е дело следующая серия по сюжету
-    vid = sower.next_video(data, rank, data["rank_index"])
-    if vid:
-        ok = await sower.send_video(context.bot, update.effective_chat.id, data, vid[0], vid[1])
+    _vids = sower.due_videos(data, rank, data["rank_index"])    # PATCH-10: с догоном пропущенной серии
+    for _path, _cap, _idx in _vids:
+        ok = await sower.send_video(context.bot, update.effective_chat.id, data, _path, _cap)
         if not ok:
-            sower.rollback_video(data, data["rank_index"])
-            logger.warning(f"[VIDEO] not sent: {vid[0]}")
+            if _idx is not None:
+                data["video_idx"][str(data["rank_index"])] = _idx       # эту и следующие — в следующий раз
+            logger.warning(f"[VIDEO] not sent: {_path}")
+            await update.message.reply_text(                                    # PATCH-10
+                f"🎬 Серия не пришла: ролик {_path.name} не найден в папке media "
+                f"или Telegram его не принял (подробности в логе).\n"
+                f"Придёт на следующем {rank.get('video_every', 2)}-м деле, когда файл будет на месте. Проверить: /video",
+                reply_markup=main_keyboard())
+            break
+    if _vids:
         save_data(data)
 
     # Вехи
@@ -1209,6 +1239,7 @@ async def cmd_sick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text, new_last = sower.mark_sick(data, rank, now_msk(), data.get("last_deed_time"), TIMEZONE)
     data["last_deed_time"] = new_last
     save_data(data)
+    hst = habits.load(); habits.mark_sick(hst, today_msk()); habits.save(hst)   # PATCH-10: только пометка в журнале
     await update.message.reply_text(text, reply_markup=main_keyboard())
 
 
@@ -1547,16 +1578,30 @@ async def cmd_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Главный таймер ────────────────────────────────────────────────────────────
 async def main_timer(context: ContextTypes.DEFAULT_TYPE):
     if not is_bot_active():
+        # PATCH-10: после финала ранги молчат, а привычки, дневник и копии идут дальше
+        now = now_msk()
+        await habits_tick(context.bot, OWNER_ID, now)
+        if now.hour == WAKEUP_HOUR and now.minute == WAKEUP_MINUTE:
+            hst = habits.load(); out = habits.morning_start(hst, now.date()); habits.save(hst)
+            await send_out(context.bot, OWNER_ID, out)
+        if now.hour == 23 and now.minute == 0:
+            await send_night_card(context.bot, OWNER_ID, "🌙 Спокойной ночи.")
         return
 
     data = load_data()
-    user_id = data.get("user_id")
-    if not user_id:
-        return
+    user_id = data.get("user_id") or OWNER_ID          # PATCH-10
 
     now = now_msk()
     h, m = now.hour, now.minute
     wd = now.weekday()
+
+    # PATCH-10: разовое восстановление после сброса 16.10, копии, воскресный вопрос, события защиты
+    _restored = restore_after_reset_20261016(data)
+    if _restored:
+        await context.bot.send_message(chat_id=user_id, text=_restored)
+        data = load_data()
+    await habits_tick(context.bot, user_id, now)
+    data = load_data()                                  # PATCH-10: свежая копия после тика (копия в Telegram пишет дату)
 
     rank = get_rank_data(data["rank_index"])
     era = rank["era"]
@@ -1608,6 +1653,14 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         if not holiday:
             data["waiting_for_plans"] = True
         save_data(data)
+        hst = habits.load()                                      # PATCH-10
+        hst["waiting_sunday"] = False                           # воскресный ответ — до утра
+        if holiday:                                             # в праздник/отпуск дел не спрашиваем — сразу дневник
+            out = habits.morning_start(hst, today_msk())
+            habits.save(hst)
+            await send_out(context.bot, user_id, out)
+        else:
+            habits.save(hst)
 
     # 04:00 Пн–Пт — Супергерой
     if h == 4 and m == 0 and wd < 5 and not holiday:
@@ -1673,25 +1726,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         )
 
     # 21:00 — Вечерний чек
-    if h == 21 and m == 0 and not data.get("waiting_for_keeper"):
-        deeds = data["rank_deeds"]
-        needed = effective_deeds_needed(data)
-        streak = data.get("keeper_streak", 0)
-        streak_info = f"\n🔥 Серия: {streak} дней" if streak > 0 else ""
-        if holiday:
-            eve_text = f"🌙 Вечер праздника. {rank['name']}. Ты сдержал сегодня соглашение с собой? (сдержал/сорвал)"
-        elif rank["deeds_needed"] > 0:
-            bar = f"[{progress_bar(deeds, needed)}] {deeds}/{needed}"
-            eve_text = (
-                f"🌙 Вечер у костра. {rank['name']}.\n"
-                f"{bar}{streak_info}\n\n"
-                f"Ты сдержал сегодня соглашение с собой? (сдержал/сорвал)"
-            )
-        else:
-            eve_text = f"🌙 Вечер. {rank['name']}{streak_info}. Ты сдержал соглашение? (сдержал/сорвал)"
-        await context.bot.send_message(chat_id=user_id, text=eve_text)
-        data["waiting_for_keeper"] = True
-        save_data(data)
+    # PATCH-10: вечерний вопрос «сдержал/сорвал» убран (ТЗ привычек, п. 3)
 
     # 21:30 Пн–Пт — Мультимиллионер
     if h == 21 and m == 30 and wd < 5:
@@ -1751,6 +1786,8 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         else:
             night_msg = f"🌙 Спокойной ночи. {rank['name']}. Запас дел создан — ждём дату перехода."
 
+        if await send_night_card(context.bot, user_id, night_msg):     # PATCH-10: карточка перед сном
+            return
         img_prompt = rank.get("image_prompt")
         if rank.get("scenes"):                     # PATCH-8: ночная картинка из пула сцен ранга
             img_prompt = random.choice(rank["scenes"])[1]
@@ -1846,7 +1883,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         rank12 = get_rank_data(11)
         vtexts = rank12.get("victory_texts", [])
         msg1 = vtexts[0] if vtexts else "🗿 31 ДЕКАБРЯ. ПУТЬ ЗАВЕРШЁН."
-        msg2 = (vtexts[1] if len(vtexts) > 1 else "") + f"\n\n⚒️ Всего дел за год: {data['total_deeds']}\n🎉 С Новым Годом."
+        msg2 = (vtexts[1] if len(vtexts) > 1 else "") + f"\n\n⚒️ Всего дел за путь: {data['total_deeds']}"   # PATCH-10
         await context.bot.send_message(chat_id=user_id, text=msg1)
         await context.bot.send_message(chat_id=user_id, text=msg2)
         final_prompt = rank12.get("image_prompt")
@@ -1858,24 +1895,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
                     caption="🗿 Созидатель места. Конец пути."
                 )
 
-    # Ранний финал
-    if data["rank_index"] == 11 and not data.get("victory_shown") and not is_victory_day():
-        data["victory_shown"] = True
-        save_data(data)
-        rank12 = get_rank_data(11)
-        vtexts = rank12.get("victory_texts", [])
-        msg1 = vtexts[0] if vtexts else "👑 СОЗИДАТЕЛЬ МЕСТА\n\nПуть завершён досрочно."
-        msg2 = vtexts[1] if len(vtexts) > 1 else "Ты — первый тиран. Гёбекли-Тепе помнит тебя."
-        await context.bot.send_message(chat_id=user_id, text=msg1)
-        await context.bot.send_message(chat_id=user_id, text=msg2)
-        early_prompt = rank12.get("image_prompt")
-        if early_prompt:
-            img = await cached_image(gigachat, early_prompt)
-            if img:
-                await context.bot.send_photo(
-                    chat_id=user_id, photo=BytesIO(img),
-                    caption="🗿 Созидатель места."
-                )
+    # PATCH-10: «ранний финал» при входе в ранг 12 убран — финал только 14.01.2027
 
 
 async def handle_micro_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1902,6 +1922,289 @@ async def handle_micro_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_reply_markup(reply_markup=None)
     await context.bot.send_message(chat_id=query.message.chat_id, text=random.choice(phrases))
+
+
+# ═══ PATCH-10: привычки, копилка идей, защита данных, ролики по file_id ═══════
+async def send_out(bot, chat_id, items):
+    for it in items or []:
+        markup = None
+        if it.get("buttons"):
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton(l, callback_data=d) for l, d in it["buttons"]]])
+        await bot.send_message(chat_id=chat_id, text=it["text"], reply_markup=markup)
+
+
+def habits_text(text: str, text_lower: str):
+    """Текст для привычек и копилки. None — если текст не про них (тогда обычная обработка)."""
+    hst = habits.load()
+    now = now_msk()
+    out = None
+    if text == "💡 Идея":
+        out = habits.idea_start(hst)
+    elif text == "🗂 Копилка" or text_lower in ("копилка", "идеи", "копилка идей"):
+        return [{"text": p, "buttons": None} for p in habits.ideas_pages(hst)]
+    elif text_lower.startswith("идея"):
+        rest = text[4:].lstrip(" :—-")
+        out = habits.idea_add(hst, rest, now) if rest else habits.idea_start(hst)
+    elif hst.get("waiting_idea"):
+        out = habits.idea_add(hst, text, now)
+    else:
+        v = habits.text_as_answer(hst, text)
+        if v:
+            out = habits.answer(hst, v, hst.get("asking_for"), now.date())
+        else:
+            out = habits.morning_text(hst, text, now.date())
+            if out is None:
+                out = habits.sunday_text(hst, text)
+    if out is not None:
+        habits.save(hst)
+    return out
+
+
+async def habits_tick(bot, user_id, now):
+    """Каждую минуту: копии на сервере, воскресный вопрос, копия в Telegram, события защиты."""
+    today = now.date()
+    try:
+        for p in (DATA_DIR / "path_data.json", habits.HABITS_FILE):
+            safe_store.daily_backup(p, today)
+        hst = habits.load()
+        if habits.sunday_due(hst, now):
+            out = habits.sunday_message(hst, today)
+            habits.save(hst)
+            await send_out(bot, user_id, out)
+        if now.hour == 23 and now.minute == 10:
+            data = load_data()
+            last = data.get("tg_backup_date")
+            if not last or (today - date.fromisoformat(last)).days >= TG_BACKUP_EVERY_DAYS:
+                await send_backup(bot, user_id, silent=True)
+                data["tg_backup_date"] = today.isoformat()
+                save_data(data)
+        if now.hour == 12 and now.minute == 0:
+            free = safe_store.disk_free_mb(DATA_DIR)
+            if 0 <= free < 100:
+                await bot.send_message(chat_id=user_id,
+                                       text=f"⚠️ На сервере осталось {free} МБ. Если место кончится, файлы не запишутся.")
+    except Exception as e:
+        logger.error(f"habits_tick: {e}")
+    for ev in safe_store.pop_events():
+        try:
+            await bot.send_message(chat_id=user_id, text=ev)
+        except Exception as e:
+            logger.error(f"event send: {e}")
+
+
+async def send_backup(bot, chat_id, silent=True):
+    stamp = today_msk()
+    for name, raw in safe_store.bundle([DATA_DIR / "path_data.json", habits.HABITS_FILE]):
+        bio = BytesIO(raw)
+        fname = f"{Path(name).stem}_{stamp.isoformat()}.json"
+        await bot.send_document(
+            chat_id=chat_id, document=bio, filename=fname, disable_notification=silent,
+            caption=f"💾 Копия на {stamp.strftime('%d.%m')}. Если прогресс пропадёт — перешли этот файл боту.")
+
+
+NIGHT_CARD_FILES = [Path("/app/media/night_card.jpg"), Path("/app/data/media/night_card.jpg")]
+
+async def send_night_card(bot, chat_id, caption) -> bool:
+    """PATCH-10: карточка «Мой день окончен…» в 23:00 (решение 16.10). Берётся по file_id —
+    его бот запоминает, когда картинку прислали ему с подписью «сон». Нет карточки — False."""
+    data = load_data()
+    fid = data.get("night_card_file_id")
+    try:
+        if fid:
+            if data.get("night_card_kind") == "document":
+                await bot.send_document(chat_id=chat_id, document=fid, caption=caption)
+            else:
+                await bot.send_photo(chat_id=chat_id, photo=fid, caption=caption)
+            return True
+        for p in NIGHT_CARD_FILES:
+            if p.exists():
+                with open(p, "rb") as f:
+                    m = await bot.send_photo(chat_id=chat_id, photo=f, caption=caption)
+                if m and getattr(m, "photo", None):
+                    data["night_card_file_id"] = m.photo[-1].file_id
+                    save_data(data)
+                return True
+    except Exception as e:
+        logger.error(f"night card: {e}")
+    return False
+
+
+RESTORE_FLAG = "restored_20261016"
+
+def restore_after_reset_20261016(data: dict):
+    """Разово: вернуть прогресс на 15.10 поверх сброса 16.10 (долг 126 = 6×17 + 2×12 за пустой файл).
+    Было на 14–15.10 (скрины): Сеятель 5/12, всего 102, долг 29, вехи 6, борозды ранга 44 (8/16/20)."""
+    if data.get(RESTORE_FLAG):
+        return None
+    if not (data.get("rank_index") == 8 and data.get("penalty_pool", 0) >= 126 and data.get("total_deeds", 0) < 102):
+        data[RESTORE_FLAG] = "skip"
+        save_data(data)
+        return None
+    stones.ensure_keys(data)
+    sower.ensure_keys(data)
+    data["rank_deeds"] += 5
+    data["total_deeds"] += 102
+    data["penalty_pool"] -= 97
+    data["milestones_shown"] = sorted(set(data.get("milestones_shown", [])) | {17, 34, 51, 68, 85, 102})
+    data["stones_total"] += 44
+    data["stones_rank"] += 44
+    for k, v in (("morning", 8), ("day", 16), ("evening", 20)):
+        data["stones_slots"][k] = data["stones_slots"].get(k, 0) + v
+    data["granary_fields"] += 5
+    data["waiting_for_keeper"] = False
+    data[RESTORE_FLAG] = today_str()
+    save_data(data)
+    return (f"♻️ Прогресс восстановлен после сброса 16.10:\n"
+            f"Сеятель {data['rank_deeds']}/12 · всего {data['total_deeds']}/174 · долг {data['penalty_pool']}\n"
+            f"Борозд за ранг: {data['stones_rank']} · житница {sower.fmt(data['granary'])} ₽\n"
+            f"Тексты семян 14–15.10 вернуть нечем — копий тогда не было. Теперь копии есть.")
+
+
+async def handle_habit_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parsed = habits.parse_callback(query.data)
+    if not parsed:
+        return
+    value, for_iso = parsed
+    hst = habits.load()
+    out = habits.answer(hst, value, for_iso, today_msk())
+    habits.save(hst)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await send_out(context.bot, query.message.chat_id, out)
+
+
+async def cmd_habit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/habit — задать вопрос о привычке сейчас; /habit N — выставить счёт (разово, при запуске)."""
+    hst = habits.load()
+    today = today_msk()
+    if context.args and context.args[0].isdigit():
+        msg = habits.set_count(hst, int(context.args[0]), today)
+        habits.save(hst)
+        await update.message.reply_text(msg, reply_markup=main_keyboard())
+        return
+    out = habits.ask_next(hst, today)
+    habits.save(hst)
+    if not out:
+        out = [{"text": habits.status_line(hst, today) + "\n" + habits.quiet_line(hst, today), "buttons": None}]
+    await send_out(context.bot, update.effective_chat.id, out)
+
+
+async def cmd_habits(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(habits.plan_text(habits.load(), today_msk()), reply_markup=main_keyboard())
+
+
+async def cmd_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    hst = habits.load()
+    text = " ".join(context.args or [])
+    out = habits.idea_add(hst, text, now_msk()) if text else habits.idea_start(hst)
+    habits.save(hst)
+    await send_out(context.bot, update.effective_chat.id, out)
+
+
+async def cmd_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    for p in habits.ideas_pages(habits.load()):
+        await update.message.reply_text(p, reply_markup=main_keyboard())
+
+
+async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_backup(context.bot, update.effective_chat.id, silent=False)
+
+
+async def cmd_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Какие ролики нужны рангу и какие бот уже знает."""
+    data = load_data()
+    sower.ensure_keys(data)
+    lines = []
+    for idx in range(data["rank_index"], 12):
+        r = get_rank_data(idx)
+        if not r.get("videos"):
+            continue
+        lines.append(f"🎬 «{r['name']}» — серия на каждом {r.get('video_every', 2)}-м деле:")
+        for fname, cap in r["videos"]:
+            p = sower.find_media(fname)
+            size = f" ({p.stat().st_size / 1048576:.0f} МБ)" if p.exists() else ""
+            if p.exists() and p.stat().st_size > 50 * 1048576:
+                mark = "⚠️"
+            elif fname in data["video_file_ids"]:
+                mark = "✅"
+            elif p.exists():
+                mark = "📁"
+            else:
+                mark = "❌"
+            lines.append(f"{mark} {fname}{size} — {cap}")
+        lines.append("")
+    if not lines:
+        lines = ["🎬 В оставшихся рангах роликов не задано."]
+    lines.append("✅ уже отправлялся · 📁 лежит в media, ждёт своего дела · ⚠️ больше 50 МБ — Telegram не примет · ❌ файла нет.\n"
+                 "Ролики лежат в папке media/ на GitHub, имя файла — ровно как в списке.")
+    await update.message.reply_text("\n".join(lines), reply_markup=main_keyboard())
+
+
+async def handle_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Видео с подписью → ролик сериала по file_id. Файл .json → восстановление прогресса из копии."""
+    msg = update.message
+    if update.effective_user and update.effective_user.id != OWNER_ID:
+        return
+    cap = (msg.caption or "").strip()
+    is_img_doc = bool(msg.document and (msg.document.mime_type or "").startswith("image/"))
+    if msg.photo or is_img_doc:                                         # PATCH-10: карточка перед сном
+        if not cap.lower().startswith("сон"):
+            return
+        data = load_data()
+        if msg.photo:
+            data["night_card_file_id"] = msg.photo[-1].file_id
+            data["night_card_kind"] = "photo"
+        else:
+            data["night_card_file_id"] = msg.document.file_id
+            data["night_card_kind"] = "document"
+        save_data(data)
+        await msg.reply_text("🌙 Запомнил. Буду присылать эту картинку каждый вечер в 23:00, перед сном.",
+                             reply_markup=main_keyboard())
+        return
+    if msg.video or (msg.document and (msg.document.mime_type or "").startswith("video/")):
+        if not cap:
+            await msg.reply_text("🎬 Нужна подпись — имя ролика, например r09_4. Пришли ещё раз с подписью.")
+            return
+        name = cap.split()[0]
+        if not name.lower().endswith(".mp4"):
+            name += ".mp4"
+        data = load_data()
+        sower.ensure_keys(data)
+        if msg.video:
+            data["video_file_ids"][name] = msg.video.file_id
+            data.setdefault("video_kinds", {})[name] = "video"
+        else:
+            data["video_file_ids"][name] = msg.document.file_id
+            data.setdefault("video_kinds", {})[name] = "document"
+        save_data(data)
+        await msg.reply_text(f"🎬 Запомнил {name}. Придёт на своём деле. Проверить: /video",
+                             reply_markup=main_keyboard())
+        return
+    doc = msg.document
+    if doc and (doc.file_name or "").lower().endswith(".json"):
+        f = await doc.get_file()
+        raw = bytes(await f.download_as_bytearray())
+        allowed = {"path_data.json": DATA_DIR / "path_data.json", "habits_data.json": habits.HABITS_FILE}
+        try:
+            target, d = safe_store.parse_restore(doc.file_name, raw, allowed)
+        except ValueError as e:
+            await msg.reply_text(f"Не восстановил: {e}")
+            return
+        if target.exists():
+            shutil.copy2(target, target.with_name(f"{target.stem}.before-restore-{now_msk():%Y%m%d-%H%M%S}.json"))
+        safe_store.guarded_save(target, d, force=True)
+        if target.name == "path_data.json":
+            d2 = load_data()
+            txt = (f"♻️ Прогресс восстановлен из {doc.file_name}:\n"
+                   f"ранг {d2['rank_index'] + 1}, {d2['rank_deeds']} дел за ранг, всего {d2['total_deeds']}/174, "
+                   f"долг {d2.get('penalty_pool', 0)}.")
+        else:
+            txt = f"♻️ Привычки восстановлены из {doc.file_name}. {habits.status_line(habits.load(), today_msk())}"
+        await msg.reply_text(txt, reply_markup=main_keyboard())
 
 
 # ── Обработка текста и кнопок ─────────────────────────────────────────────────
@@ -1964,9 +2267,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "📊 Баланс":
         await cmd_balance(update, context)
         return
-    elif text == "🏛 Коллекция":
-        await cmd_collection(update, context)
-        return
     elif text == "📋 Меню":
         await cmd_menu(update, context)
         return
@@ -1978,41 +2278,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, reply_markup=main_keyboard())
         return
 
-    # Вечерний чек — keeper
-    if data.get("waiting_for_keeper"):
-        if any(w in text_lower for w in ["сдержал", "yes", "конечно", "выполнено", "да"]):
-            data["keeper_streak"] = data.get("keeper_streak", 0) + 1
-            data["total_keeper_success"] = data.get("total_keeper_success", 0) + 1
-            data["waiting_for_keeper"] = False
-            save_data(data)
-            rank = get_rank_data(data["rank_index"])
-            success_text = await generate_keeper_success_text(data["keeper_streak"], rank["name"])
-            await update.message.reply_text(
-                f"✅ Зафиксировано.\n\n{success_text}\n🔥 Серия: {data['keeper_streak']} дней",
-                reply_markup=main_keyboard()
-            )
-        elif any(w in text_lower for w in ["сорвал", "no", "не выполнено", "нет", "нету"]):
-            old_streak = data.get("keeper_streak", 0)
-            if sower.is_sick(data, today_str()):                 # PATCH-9: больничный — серия цела
-                data["waiting_for_keeper"] = False
-                save_data(data)
-                await update.message.reply_text(
-                    f"🤒 Больничный. Серия не тронута: {old_streak} дней.\nЛечись, племя подождёт.",
-                    reply_markup=main_keyboard()
-                )
-                return
-            data["keeper_streak"] = 0
-            data["waiting_for_keeper"] = False
-            save_data(data)
-            await update.message.reply_text(
-                f"❌ Соглашение не выдержано.\n"
-                f"Серия сброшена (было: {old_streak}).\n"
-                f"Социальное напряжение в племени растёт.",
-                reply_markup=main_keyboard()
-            )
-        else:
-            await update.message.reply_text("Ответь: 'сдержал' или 'сорвал'")
-        return
+    # PATCH-10: копилка идей, утренний дневник, ответ о привычке текстом, воскресный ответ
+    if (not data.get("waiting_for_plans") or text in ("💡 Идея", "🗂 Копилка")
+            or text_lower.startswith("идея")):
+        out = habits_text(text, text_lower)
+        if out is not None:
+            await send_out(context.bot, update.effective_chat.id, out)
+            return
 
     # Утренний вопрос про 4 дела
     if data.get("waiting_for_plans"):
@@ -2050,6 +2322,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await update.message.reply_text("Есть 4 дела? (есть/нет)")
+            return
+        hst = habits.load()                                     # PATCH-10: дальше — дневник и привычка
+        out = habits.morning_start(hst, today_msk())
+        habits.save(hst)
+        await send_out(context.bot, update.effective_chat.id, out)
         return
 
     # Свободный текст
@@ -2109,7 +2386,6 @@ def main():
     app.add_handler(CommandHandler("balance", cmd_balance))
     app.add_handler(CommandHandler("paydebt", cmd_paydebt))
     app.add_handler(CommandHandler("carry",   cmd_carry))
-    app.add_handler(CommandHandler("collection", cmd_collection))
     app.add_handler(CommandHandler("status",  cmd_status))
     app.add_handler(CommandHandler("rank",    cmd_rank))
     app.add_handler(CommandHandler("path",    cmd_path))
@@ -2118,10 +2394,18 @@ def main():
     app.add_handler(CommandHandler("schedule", cmd_schedule))
     app.add_handler(CommandHandler("wisdom",  cmd_wisdom))
     app.add_handler(CallbackQueryHandler(handle_micro_done, pattern="^micro_done$"))
+    app.add_handler(CallbackQueryHandler(handle_habit_cb, pattern=r"^hab\|"))          # PATCH-10
+    app.add_handler(CommandHandler("habit",   cmd_habit))                               # PATCH-10
+    app.add_handler(CommandHandler("habits",  cmd_habits))                              # PATCH-10
+    app.add_handler(CommandHandler("idea",    cmd_idea))                                # PATCH-10
+    app.add_handler(CommandHandler("ideas",   cmd_ideas))                               # PATCH-10
+    app.add_handler(CommandHandler("backup",  cmd_backup))                              # PATCH-10
+    app.add_handler(CommandHandler("video",   cmd_video))                               # PATCH-10
+    app.add_handler(MessageHandler(filters.VIDEO | filters.PHOTO | filters.Document.ALL, handle_upload))  # PATCH-10
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.job_queue.run_repeating(main_timer, interval=60, first=10)
 
-    logger.info("Путь через эпохи v3.0 запущен")
+    logger.info("Путь через эпохи v3.0 + PATCH-10 запущен")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
