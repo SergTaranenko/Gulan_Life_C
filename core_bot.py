@@ -60,10 +60,20 @@ def main_keyboard():
         _step = get_rank_data(load_data()["rank_index"]).get("step_button", "🧱 Камень")
     except Exception:
         _step = "🧱 Камень"
+    try:                                                     # PATCH-11: третий ряд — по рангу
+        _r = get_rank_data(load_data()["rank_index"])
+        if _r.get("coin"):
+            _row3 = [_r["coin"].get("button", "🪙 Сеанс"), "🤒 Заболел"]
+        elif _r.get("seed_categories") or _r.get("field_bonus"):
+            _row3 = ["🌱 Семя", "🌾 Житница", "🤒 Заболел"]
+        else:
+            _row3 = ["🤒 Заболел"]
+    except Exception:
+        _row3 = ["🌱 Семя", "🌾 Житница", "🤒 Заболел"]
     return ReplyKeyboardMarkup([
         [_step, "⚒️ Сделано", "🤔 Пытался"],           # PATCH-8 / PATCH-9
         ["❌ Неудача", "📊 Статус", "🎵 Гимн"],       # PATCH-8
-        ["🌱 Семя", "🌾 Житница", "🤒 Заболел"],      # PATCH-9
+        _row3,                                         # PATCH-9 / PATCH-11
         ["🎖 Ранг", "🗺 Путь"],
         ["🧊 Шаман", "🎁 Награда"],
         ["📜 Расписание", "🔮 Мудрость"],
@@ -138,9 +148,9 @@ MILESTONES = {
     114: "🏛 Первый ранг Неолита. 114 дел. Ты выжил на чужой земле.",
     126: "🏗 Второй ранг. 126 дел. Чужой дом стал чуть своим.",
     138: "🌾 Третий ранг. 138 дел. Ты создаёшь еду — это власть.",
-    150: "🗡 Четвёртый ранг. 150 дел. Технолог смерти.",
+    150: "🌟 Четвёртый ранг. 150 дел. Мастер обряда: община собирается у твоего огня.",
     162: "🔑 Пятый ранг Неолита. 162 дела. Ключи от житницы — твои.",
-    174: "🗿 174 дела. ПУТЬ ПРОЙДЕН. Ты — Созидатель места. Первый тиран.",
+    174: "🗿 174 дела. ПУТЬ ПРОЙДЕН. Ты — Созидатель места.",
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -330,7 +340,7 @@ RANK_FRAMING = {
     6:  "Чужак нашёл: {reward}",
     7:  "Строитель заслужил: {reward}",
     8:  "Сеятель увидел всходы и отдыхает: {reward}",
-    9:  "Жрец разрешил: {reward}",
+    9:  "Мастер обряда разрешил: {reward}",
     10: "Хранитель зерна открыл: {reward}",
     11: "Созидатель велел себе: {reward}",
 }
@@ -721,10 +731,11 @@ def rank_status_text(data: dict) -> str:
         lines.append(f"⚒️ Всего дел: {data['total_deeds']}/174")
     else:
         bar = progress_bar(deeds, needed)
-        lines.append(f"⚒️ [{bar}] {deeds}/{needed}")
+        _dg = rank.get("words", {}).get("deeds_gen", "")       # PATCH-11
+        lines.append(f"⚒️ [{bar}] {deeds}/{needed} {_dg}".rstrip())
         lines.append(f"📊 Всего дел: {data['total_deeds']}/174")
         if deeds < needed:
-            lines.append(f"🎯 До следующего ранга: {needed - deeds}")
+            lines.append(f"🎯 До следующего ранга: {needed - deeds} {_dg}".rstrip())
         else:
             over = deeds - needed
             lines.append(f"🔥 Норма выполнена! Сверхдел сверх нормы: {over} — ждём даты перехода.")
@@ -735,6 +746,9 @@ def rank_status_text(data: dict) -> str:
         _gl = sower.status_line(data, rank)                 # PATCH-9
         if _gl:
             lines.append(_gl)
+        if rank.get("coin"):                                # PATCH-11
+            lines.append(rank["coin"]["status_line"].format(
+                coins=int(data.get("coins", 0)), spent=int(data.get("coins_spent_rank", 0))))
         if sower.is_sick(data, today_str()):
             lines.append("🤒 Сегодня больничный — голод спит.")         # PATCH-10: серии больше нет
         try:
@@ -772,7 +786,7 @@ ERA_TRANSITION_TEXT = """
 На севере, за тремя горными хребтами,
 строят из необтёсанного камня.
 Сеют дикую пшеницу в борозды.
-Режут горло пленникам под звёздами Гёбекли-Тепе.
+Собираются на праздники под звёздами Гёбекли-Тепе.
 
 Там другие боги. Другая власть. Другой страх.
 
@@ -840,6 +854,7 @@ async def check_date_transitions(bot, user_id: int, data: dict):
                 data["rank_deeds"] = 0
                 stones.on_rank_change(data)        # PATCH-8: счётчики камней ранга в ноль
                 sower.on_rank_change(data)         # PATCH-9: семена ранга в ноль
+                data["coins_spent_rank"] = 0       # PATCH-11
                 save_data(data)
 
                 new_rank = get_rank_data(new_idx)
@@ -1078,6 +1093,7 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     needed = effective_deeds_needed(data)
     deeds = data["rank_deeds"]
     phrase = random.choice(rank["done_phrases"])
+    _w = rank.get("words", {})                       # PATCH-11: слова ранга (праздник/обряд)
 
     # Выбор продукта: каждое 5-е — редкий
     is_rare = (deeds % 5 == 0)
@@ -1093,11 +1109,11 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bar = progress_bar(deeds, needed)
         rare_mark = "🌟 " if is_rare else ""
         if product_name:
-            msg = f"⚒️ {phrase}\n\n{rare_mark}Ты выполнил дело: {product_name}\n\n[{bar}] {deeds}/{needed}"
+            msg = f"⚒️ {phrase}\n\n{rare_mark}{_w.get('deed_done', 'Ты выполнил дело')}: {product_name}\n\n[{bar}] {deeds}/{needed}"
         else:
             msg = f"⚒️ {phrase}\n\n[{bar}] {deeds}/{needed}"
         if remaining > 0:
-            msg += f"\nДо ранга: {remaining}"
+            msg += f"\nДо ранга: {remaining} {_w.get('deeds_gen', '')}".rstrip()
         else:
             msg += f"\n🔥 Дел накоплено с запасом! Ждём даты перехода."
     else:
@@ -1108,7 +1124,7 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = f"👑 {phrase}"
 
     if is_holiday_mode():
-        msg += "\n\n🎉 Праздничный режим — дело идёт в запас."
+        msg += "\n\n" + _w.get("holiday_done", "🎉 Праздничный режим — дело идёт в запас.")
 
     await update.message.reply_text(msg, reply_markup=main_keyboard())
 
@@ -1174,14 +1190,56 @@ async def cmd_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last = datetime.fromisoformat(data.get("last_deed_time") or now_msk().isoformat())
     if last.tzinfo is None:
         last = TIMEZONE.localize(last)
-    data["last_deed_time"] = (max(last, now_msk()) + timedelta(hours=4)).isoformat()   # PATCH-8: камень = +4ч
+    if rank.get("step_additive") and data.get("last_deed_time"):   # PATCH-11: +4ч к текущему, голод не обнуляется
+        data["last_deed_time"] = (last + timedelta(hours=4)).isoformat()
+    else:
+        data["last_deed_time"] = (max(last, now_msk()) + timedelta(hours=4)).isoformat()   # PATCH-8: камень = +4ч
     data["hunger_notified"] = False
     msg = stones.add_stone(data, rank, now_msk().hour, data["rank_deeds"], effective_deeds_needed(data))
+    _coin = rank.get("coin")                                   # PATCH-11: обряд = монетка
+    if _coin:
+        data["coins"] = int(data.get("coins", 0)) + 1
+        msg += "\n\n" + _coin["earn_line"].format(coins=data["coins"])
     save_data(data)
     sp = sower.seed_prompt(rank)                                   # PATCH-9: борозда = монетка + семя
     if sp:
         msg += "\n\n" + sp
     await update.message.reply_text(msg, reply_markup=main_keyboard())
+
+
+# PATCH-11 ── /session: потратить монетку на 15 минут сеанса видений
+async def cmd_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_data()
+    rank = get_rank_data(data["rank_index"])
+    coin = rank.get("coin") or {}
+    coins = int(data.get("coins", 0))
+    if coins <= 0:
+        await update.message.reply_text(coin.get("empty_text", "🪙 Монеток нет."), reply_markup=main_keyboard())
+        return
+    data["coins"] = coins - 1
+    data["coins_spent_rank"] = int(data.get("coins_spent_rank", 0)) + 1
+    data.setdefault("coins_log", []).append(now_msk().isoformat(timespec="minutes"))
+    data["coins_log"] = data["coins_log"][-200:]
+    save_data(data)
+    if coin.get("letters"):                                    # одно из четырёх: буква и случайное число
+        _l, _top = random.choice(coin["letters"])
+        topic = f"{_l} {random.randint(0, int(_top))}"
+    else:
+        topic = random.choice(coin.get("topics") or ["любая страна на карте"])
+    await update.message.reply_text(
+        coin.get("spend_text", "🔮 Сеанс: 15 минут. {topic}. Осталось {coins}.").format(coins=data["coins"], topic=topic),
+        reply_markup=main_keyboard())
+    try:                                                    # через 15 минут — «сеанс закрыт»
+        context.job_queue.run_once(session_end, int(coin.get("minutes", 20)) * 60,
+                                   chat_id=update.effective_chat.id,
+                                   data=coin.get("end_text", "⏰ Сеанс закрыт."))
+    except Exception as e:
+        logger.error(f"session timer: {e}")
+
+
+async def session_end(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    await context.bot.send_message(chat_id=job.chat_id, text=job.data)
 
 
 # PATCH-8 ── /hymn: стрела из колчана — включи мотивацию на телефоне
@@ -1600,12 +1658,37 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
     if _restored:
         await context.bot.send_message(chat_id=user_id, text=_restored)
         data = load_data()
+    try:                                                # PATCH-11: разово обнулить копилку идей
+        _hs = habits.load()
+        if not _hs.get("ideas_reset_20261104"):
+            _hs["ideas_archive"] = _hs.get("ideas_archive", []) + _hs.get("ideas", [])
+            _hs["ideas"] = []
+            _hs["ideas_reset_20261104"] = True
+            habits.save(_hs)
+    except Exception as e:
+        logger.error(f"ideas reset: {e}")
     await habits_tick(context.bot, user_id, now)
     data = load_data()                                  # PATCH-10: свежая копия после тика (копия в Telegram пишет дату)
 
     rank = get_rank_data(data["rank_index"])
     era = rank["era"]
     holiday = is_holiday_mode()
+
+    # PATCH-11: в праздник голод заморожен — после праздника счёт с нуля, без бунта в первую ночь
+    if holiday:
+        _now = now_msk()
+        if not data.get("holiday_week"):                 # неделя с праздником — без «племя недовольно»
+            data["holiday_week"] = True
+            save_data(data)
+        try:
+            _last = datetime.fromisoformat(data["last_deed_time"]) if data.get("last_deed_time") else None
+            if _last is not None and _last.tzinfo is None:
+                _last = TIMEZONE.localize(_last)
+        except Exception:
+            _last = None
+        if _last is None or (_now - _last).total_seconds() > 1800:
+            data["last_deed_time"] = _now.isoformat()
+            save_data(data)
 
     # Сброс дня
     if data.get("current_date") != today_str():
@@ -1635,7 +1718,18 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
     # 05:30 — Утро
     if h == WAKEUP_HOUR and m == WAKEUP_MINUTE and not data.get("morning_done"):
         commandments = load_commandments()
-        if commandments:
+        if holiday:                                     # PATCH-11: одно спокойное сообщение, в нём же дневник
+            hst = habits.load()
+            hst["waiting_sunday"] = False
+            habits.pause_for_holiday(hst, today_msk())  # день праздника не в счёт привычки
+            q = habits.teeth_question(hst, today_msk()) # в отпуске — только про зубы
+            habits.save(hst)
+            data["morning_done"] = True
+            save_data(data)
+            _hm = rank.get("holiday_morning", "🌅 Праздник, {rank_name}. Отдыхай — сегодня бот молчит.")
+            await send_out(context.bot, user_id,
+                           [{"text": _hm.format(rank_name=rank["name"]) + "\n\n" + q["text"], "buttons": q["buttons"]}])
+        elif commandments:
             short_list = "\n".join([f"{c['id']}. {c['short']}" for c in commandments])
             if holiday:
                 morning = f"🌅 Рассвет. Праздник, {rank['name']}. Отдыхай — но заповеди помни:\n\n{short_list}"
@@ -1648,6 +1742,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         else:
             morning = f"🌅 Рассвет. {rank['name']}. Четыре дела написал? (есть/нет)"
 
+    if h == WAKEUP_HOUR and m == WAKEUP_MINUTE and not data.get("morning_done") and not holiday:   # PATCH-11
         await context.bot.send_message(chat_id=user_id, text=morning)
         data["morning_done"] = True
         if not holiday:
@@ -1655,6 +1750,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
         hst = habits.load()                                      # PATCH-10
         hst["waiting_sunday"] = False                           # воскресный ответ — до утра
+        hst["teeth_for"] = None                                 # PATCH-11: отпуск кончился — вопрос про зубы снят
         if holiday:                                             # в праздник/отпуск дел не спрашиваем — сразу дневник
             out = habits.morning_start(hst, today_msk())
             habits.save(hst)
@@ -1677,7 +1773,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         )
 
     # 09:00 Пн–Пт
-    if h == 9 and m == 0 and wd < 5:
+    if h == 9 and m == 0 and wd < 5 and not holiday:   # PATCH-11: в праздник молчим
         if holiday:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -1694,7 +1790,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
             )
 
     # 18:00 Пн–Пт
-    if h == 18 and m == 0 and wd < 5:
+    if h == 18 and m == 0 and wd < 5 and not holiday:   # PATCH-11
         await context.bot.send_message(
             chat_id=user_id,
             text=(
@@ -1717,7 +1813,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=user_id, text=sc_text)
 
     # PATCH-8 ── 23:00 — строка камней ранга (утро/день/вечер)
-    if h == 23 and m == 0 and not data.get("stones_line_sent"):
+    if h == 23 and m == 0 and not data.get("stones_line_sent") and not holiday:   # PATCH-11
         data["stones_line_sent"] = True
         save_data(data)
         await context.bot.send_message(
@@ -1729,7 +1825,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
     # PATCH-10: вечерний вопрос «сдержал/сорвал» убран (ТЗ привычек, п. 3)
 
     # 21:30 Пн–Пт — Мультимиллионер
-    if h == 21 and m == 30 and wd < 5:
+    if h == 21 and m == 30 and wd < 5 and not holiday:   # PATCH-11
         if data.get("superhero_morning_flag"):
             msg = (
                 "🔥 Ночная мастерская открыта. Есть искра — выходит Мультимиллионер.\n"
@@ -1745,7 +1841,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=user_id, text=msg)
 
     # 08:00 Суббота — Супергерой
-    if h == 8 and m == 0 and wd == 5:
+    if h == 8 and m == 0 and wd == 5 and not holiday:   # PATCH-11
         data["superhero_flag"] = True
         save_data(data)
         await context.bot.send_message(
@@ -1759,14 +1855,14 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         )
 
     # 09:00 Воскресенье
-    if h == 9 and m == 0 and wd == 6:
+    if h == 9 and m == 0 and wd == 6 and not holiday:   # PATCH-11
         await context.bot.send_message(
             chat_id=user_id,
             text="💰 Утро Мультимиллионера. Один денежный шаг сегодня важнее десяти фантазий."
         )
 
     # 15:00 Воскресенье
-    if h == 15 and m == 0 and wd == 6:
+    if h == 15 and m == 0 and wd == 6 and not holiday:   # PATCH-11
         await context.bot.send_message(
             chat_id=user_id,
             text="🌿 Воскресный очаг зовёт. После обеда главное — семья, тепло и присутствие."
@@ -1780,12 +1876,14 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         needed = effective_deeds_needed(data)
         remaining = max(0, needed - deeds) if rank["deeds_needed"] > 0 else 0
         if remaining > 0:
-            night_msg = f"🌙 Спокойной ночи. {rank['name']}. До повышения: {remaining} дел."
+            night_msg = f"🌙 Спокойной ночи. {rank['name']}. До повышения: {remaining} {rank.get('words', {}).get('deeds_gen', 'дел')}."   # PATCH-11
         elif rank["deeds_needed"] == 0:
             night_msg = "🌙 Спокойной ночи, Созидатель."
         else:
             night_msg = f"🌙 Спокойной ночи. {rank['name']}. Запас дел создан — ждём дату перехода."
 
+        if holiday:                                                    # PATCH-11: в праздник ночью — ничего
+            return
         if await send_night_card(context.bot, user_id, night_msg):     # PATCH-10: карточка перед сном
             return
         img_prompt = rank.get("image_prompt")
@@ -1801,8 +1899,16 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=user_id, text=night_msg)
 
     # Пн 08:00 — Недельный отчёт
+    if (wd == 0 and h == 8 and m == 0 and not data.get("weekly_report_sent")
+            and (holiday or (data.get("holiday_week") and data.get("week_deeds", 0) == 0))):   # PATCH-11: неделя праздника — без отчёта
+        data["weekly_report_sent"] = True
+        data["holiday_week"] = False
+        data["week_deeds"] = 0
+        data["week_start"] = today_str()
+        save_data(data)
     if wd == 0 and h == 8 and m == 0 and not data.get("weekly_report_sent"):
         data["weekly_report_sent"] = True
+        data["holiday_week"] = False                    # PATCH-11
         week_deeds = data.get("week_deeds", 0)
         report_text = await generate_weekly_report_text(
             rank["name"], week_deeds, data["total_deeds"], era
@@ -1838,7 +1944,7 @@ async def main_timer(context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
 
     # Дофамин-пуши в фиксированные часы
-    if m == 55 and h in DOPAMINE_HOURS:
+    if m == 55 and h in DOPAMINE_HOURS and not holiday:   # PATCH-11
         if data.get("last_dopamine_hour") != h:
             data["last_dopamine_hour"] = h
             save_data(data)
@@ -1948,11 +2054,14 @@ def habits_text(text: str, text_lower: str):
     elif hst.get("waiting_idea"):
         out = habits.idea_add(hst, text, now)
     else:
-        v = habits.text_as_answer(hst, text)
-        if v:
+        out = habits.teeth_text(hst, text) if is_holiday_mode() else None   # PATCH-11: «да/нет» про зубы в отпуске
+        v = None if out is not None else habits.text_as_answer(hst, text)
+        if out is not None:
+            pass
+        elif v:
             out = habits.answer(hst, v, hst.get("asking_for"), now.date())
         else:
-            out = habits.morning_text(hst, text, now.date())
+            out = habits.morning_text(hst, text, now.date(), ask=not is_holiday_mode())   # PATCH-11
             if out is None:
                 out = habits.sunday_text(hst, text)
     if out is not None:
@@ -1967,7 +2076,7 @@ async def habits_tick(bot, user_id, now):
         for p in (DATA_DIR / "path_data.json", habits.HABITS_FILE):
             safe_store.daily_backup(p, today)
         hst = habits.load()
-        if habits.sunday_due(hst, now):
+        if habits.sunday_due(hst, now) and not is_holiday_mode():   # PATCH-11
             out = habits.sunday_message(hst, today)
             habits.save(hst)
             await send_out(bot, user_id, out)
@@ -2004,7 +2113,7 @@ async def send_backup(bot, chat_id, silent=True):
 
 NIGHT_CARD_FILES = [Path("/app/media/night_card.jpg"), Path("/app/data/media/night_card.jpg")]
 
-async def send_night_card(bot, chat_id, caption) -> bool:
+async def send_night_card(bot, chat_id, caption, silent: bool = False) -> bool:
     """PATCH-10: карточка «Мой день окончен…» в 23:00 (решение 16.10). Берётся по file_id —
     его бот запоминает, когда картинку прислали ему с подписью «сон». Нет карточки — False."""
     data = load_data()
@@ -2012,14 +2121,14 @@ async def send_night_card(bot, chat_id, caption) -> bool:
     try:
         if fid:
             if data.get("night_card_kind") == "document":
-                await bot.send_document(chat_id=chat_id, document=fid, caption=caption)
+                await bot.send_document(chat_id=chat_id, document=fid, caption=caption, disable_notification=silent)
             else:
-                await bot.send_photo(chat_id=chat_id, photo=fid, caption=caption)
+                await bot.send_photo(chat_id=chat_id, photo=fid, caption=caption, disable_notification=silent)
             return True
         for p in NIGHT_CARD_FILES:
             if p.exists():
                 with open(p, "rb") as f:
-                    m = await bot.send_photo(chat_id=chat_id, photo=f, caption=caption)
+                    m = await bot.send_photo(chat_id=chat_id, photo=f, caption=caption, disable_notification=silent)
                 if m and getattr(m, "photo", None):
                     data["night_card_file_id"] = m.photo[-1].file_id
                     save_data(data)
@@ -2069,6 +2178,22 @@ async def handle_habit_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     value, for_iso = parsed
     hst = habits.load()
     out = habits.answer(hst, value, for_iso, today_msk())
+    habits.save(hst)
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await send_out(context.bot, query.message.chat_id, out)
+
+
+async def handle_teeth_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):   # PATCH-11
+    query = update.callback_query
+    await query.answer()
+    parsed = habits.parse_teeth_callback(query.data)
+    if not parsed:
+        return
+    hst = habits.load()
+    out = habits.teeth_answer(hst, parsed[0], parsed[1])
     habits.save(hst)
     try:
         await query.edit_message_reply_markup(reply_markup=None)
@@ -2217,8 +2342,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
 
     # Обработка кнопок клавиатуры
-    if text in ("🧱 Камень", "🌱 Борозда"):       # PATCH-8 / PATCH-9
+    if text in ("🧱 Камень", "🌱 Борозда", "🔥 Обряд"):       # PATCH-8 / PATCH-9 / PATCH-11
         await cmd_step(update, context)
+        return
+    elif text == "🪙 Сеанс":                      # PATCH-11
+        await cmd_session(update, context)
         return
     elif text == "🌱 Семя":                       # PATCH-9
         context.args = []
@@ -2339,7 +2467,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     has_penalty = "неудач" in text_lower or "плохо" in text_lower or "провал" in text_lower
     has_not_penalty = any(n in text_lower for n in ["не плохо", "не провал", "не неудач"])
 
-    if any(w in text_lower for w in ["камень", "шаг", "step", "борозд"]):     # PATCH-8 / PATCH-9
+    if "сеанс" in text_lower or "монетк" in text_lower:                       # PATCH-11
+        await cmd_session(update, context)
+    elif any(w in text_lower for w in ["камень", "шаг", "step", "борозд", "обряд"]):     # PATCH-8 / PATCH-9 / PATCH-11
         await cmd_step(update, context)
     elif any(w in text_lower for w in ["заболел", "болею", "больничн"]):     # PATCH-9
         await cmd_sick(update, context)
@@ -2375,6 +2505,7 @@ def main():
     app.add_handler(CommandHandler("done",    cmd_done))
     app.add_handler(CommandHandler("step",    cmd_step))    # PATCH-8
     app.add_handler(CommandHandler("hymn",    cmd_hymn))    # PATCH-8
+    app.add_handler(CommandHandler("session", cmd_session)) # PATCH-11
     app.add_handler(CommandHandler("seed",    cmd_seed))    # PATCH-9
     app.add_handler(CommandHandler("bag",     cmd_bag))     # PATCH-9
     app.add_handler(CommandHandler("granary", cmd_granary)) # PATCH-9
@@ -2395,6 +2526,7 @@ def main():
     app.add_handler(CommandHandler("wisdom",  cmd_wisdom))
     app.add_handler(CallbackQueryHandler(handle_micro_done, pattern="^micro_done$"))
     app.add_handler(CallbackQueryHandler(handle_habit_cb, pattern=r"^hab\|"))          # PATCH-10
+    app.add_handler(CallbackQueryHandler(handle_teeth_cb, pattern=r"^tth\|"))          # PATCH-11
     app.add_handler(CommandHandler("habit",   cmd_habit))                               # PATCH-10
     app.add_handler(CommandHandler("habits",  cmd_habits))                              # PATCH-10
     app.add_handler(CommandHandler("idea",    cmd_idea))                                # PATCH-10

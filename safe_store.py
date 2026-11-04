@@ -109,7 +109,8 @@ def daily_backup(path, today: date = None) -> bool:
         return False
     if not path.exists() or _read(path) is None:
         return False
-    backup_dir(path).mkdir(parents=True, exist_ok=True)
+    bdir = backup_dir(path)                  # PATCH-11: была ошибка «bdir is not defined» — старые копии не чистились
+    bdir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, target)
     olds = sorted(bdir.glob(f"{path.stem}_????-??-??.json"))
     for old in olds[:-KEEP_BACKUPS]:

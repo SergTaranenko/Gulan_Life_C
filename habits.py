@@ -321,8 +321,9 @@ def morning_start(st: dict, today: date) -> list:
     return [{"text": DAY_QUESTION, "buttons": None}]
 
 
-def morning_text(st: dict, text: str, today: date):
-    """Если ждём «как прошёл день» — сохраняет и задаёт вопрос о привычке. Иначе None."""
+def morning_text(st: dict, text: str, today: date, ask: bool = True):
+    """Если ждём «как прошёл день» — сохраняет и задаёт вопрос о привычке. Иначе None.
+    PATCH-11: ask=False (праздник/отпуск) — только записать дневник, о привычке не спрашивать."""
     m = st.get("morning") or {}
     if m.get("step") != "day":
         return None
@@ -330,10 +331,76 @@ def morning_text(st: dict, text: str, today: date):
     prev = st["diary"].get(day)
     st["diary"][day] = (prev + "\n" + text) if prev else text
     st["morning"]["step"] = None
+    if not ask:
+        return [{"text": "Записал. Хорошего праздника 🎉", "buttons": None}]
     out = ask_next(st, today)
     if out:
         return [{"text": "Записал.", "buttons": None}] + out
     return [{"text": "Записал. " + quiet_line(st, today), "buttons": None}]
+
+
+def pause_for_holiday(st: dict, today: date):
+    """PATCH-11: день праздника не идёт в счёт привычки — ни плюсом, ни пропуском.
+    Сдвигаем «последний отвеченный день» на вчера, счёт не трогаем."""
+    h = current(st)
+    if not h or not st.get("start"):
+        return
+    if _d(st["start"]) > today:
+        return
+    y = today                      # сегодняшний день праздника тоже не в счёт
+    last = _d(st.get("last_for"))
+    if last is None or last < y:
+        st["last_for"] = y.isoformat()
+        st["asking_for"] = None
+
+
+# ── PATCH-11: зубы в отпуске — простой вопрос, счётчики привычек не трогает ──
+TEETH_Q = "🦷 Вчера почистил зубы две минуты по таймеру?"
+
+
+def teeth_question(st: dict, today: date) -> dict:
+    y = (today - timedelta(days=1)).isoformat()
+    st["teeth_for"] = y
+    return {"text": TEETH_Q, "buttons": [("Да", f"tth|да|{y}"), ("Нет", f"tth|нет|{y}")]}
+
+
+def teeth_streak(st: dict, upto_iso: str) -> int:
+    log = st.get("holiday_teeth", {})
+    d, n = _d(upto_iso), 0
+    while log.get(d.isoformat()) == "да":
+        n += 1
+        d -= timedelta(days=1)
+    return n
+
+
+def teeth_answer(st: dict, value: str, for_iso: str) -> list:
+    if not for_iso or st.get("teeth_for") != for_iso:
+        return [{"text": "Этот день уже записан.", "buttons": None}]
+    st.setdefault("holiday_teeth", {})[for_iso] = value
+    st["teeth_for"] = None
+    if value == "да":
+        n = teeth_streak(st, for_iso)
+        return [{"text": f"🦷 Отлично. В отпуске подряд: {n} дн. Хорошего праздника 🎉", "buttons": None}]
+    return [{"text": "🦷 Записал. Сегодня вечером — две минуты по таймеру, и всё.", "buttons": None}]
+
+
+def parse_teeth_callback(data: str):
+    parts = (data or "").split("|")
+    if len(parts) == 3 and parts[0] == "tth":
+        return parts[1], parts[2]
+    return None
+
+
+def teeth_text(st: dict, text: str):
+    """Ответ «да/нет» текстом на вопрос про зубы. None — если не про это."""
+    if not st.get("teeth_for"):
+        return None
+    t = text.strip().lower().rstrip(".!")
+    if t in ("да", "ага", "yes", "+"):
+        return teeth_answer(st, "да", st["teeth_for"])
+    if t in ("нет", "no", "-"):
+        return teeth_answer(st, "нет", st["teeth_for"])
+    return None
 
 
 def quiet_line(st: dict, today: date) -> str:
